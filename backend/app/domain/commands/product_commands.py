@@ -11,9 +11,9 @@ class CreateProductCommand:
     name: str
     unit_price: Decimal
     category_id: uuid.UUID
-    aggregate_id: uuid.UUID = None
+    aggregate_id: uuid.UUID | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.aggregate_id is None:
             self.aggregate_id = uuid.uuid4()
 
