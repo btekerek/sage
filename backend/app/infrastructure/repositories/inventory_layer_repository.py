@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import uuid
-from decimal import Decimal
 from datetime import datetime, timezone
-
-from sqlalchemy.ext.asyncio import AsyncSession
+from decimal import Decimal
 
 from app.domain.aggregates.inventory_layer import InventoryLayer
 from app.infrastructure.repositories.event_store_repository import EventStoreRepository
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class InventoryLayerRepository:
@@ -29,14 +28,20 @@ class InventoryLayerRepository:
         payload = first.payload or {}
 
         layer = InventoryLayer(
-            product_id=uuid.UUID(payload["product_id"]) if payload.get("product_id") else uuid.uuid4(),
+            product_id=(
+                uuid.UUID(payload["product_id"])
+                if payload.get("product_id")
+                else uuid.uuid4()
+            ),
             quantity_received=int(payload.get("quantity_received", 0)),
             unit_cost=Decimal(str(payload.get("unit_cost", "0.00"))),
             supplier_ref=payload.get("supplier_ref", ""),
             aggregate_id=aggregate_id,
-            intake_at=datetime.fromisoformat(payload["intake_at"])
-            if payload.get("intake_at")
-            else datetime.now(timezone.utc),
+            intake_at=(
+                datetime.fromisoformat(payload["intake_at"])
+                if payload.get("intake_at")
+                else datetime.now(timezone.utc)
+            ),
         )
         layer.version = 0
         layer.version = len(stored_events)

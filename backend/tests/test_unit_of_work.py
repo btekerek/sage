@@ -2,14 +2,13 @@ import uuid
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import delete
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
 from app.core.settings import get_settings
 from app.domain.aggregates.product import Product
 from app.infrastructure.event_store.models import StoredEvent
 from app.infrastructure.repositories.product_repository import ProductRepository
 from app.infrastructure.repositories.unit_of_work import UnitOfWork
+from sqlalchemy import delete
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 
 def make_engine():
@@ -53,7 +52,10 @@ async def test_uow_persists_pending_events() -> None:
         # UoW commits on clean exit
 
     async with session_maker() as session:
-        from app.infrastructure.repositories.event_store_repository import EventStoreRepository
+        from app.infrastructure.repositories.event_store_repository import (
+            EventStoreRepository,
+        )
+
         repo = EventStoreRepository(session)
         stream = await repo.load_stream(str(product_id))
 
@@ -84,7 +86,10 @@ async def test_product_repository_reconstructs_state() -> None:
 
     # Persist a price override event
     async with session_maker() as session:
-        from app.infrastructure.repositories.event_store_repository import EventStoreRepository
+        from app.infrastructure.repositories.event_store_repository import (
+            EventStoreRepository,
+        )
+
         repo = EventStoreRepository(session)
         await repo.append_event(
             aggregate_type="Product",
@@ -146,7 +151,10 @@ async def test_uow_rolls_back_on_exception() -> None:
         pass
 
     async with session_maker() as session:
-        from app.infrastructure.repositories.event_store_repository import EventStoreRepository
+        from app.infrastructure.repositories.event_store_repository import (
+            EventStoreRepository,
+        )
+
         repo = EventStoreRepository(session)
         stream = await repo.load_stream(str(product_id))
 
