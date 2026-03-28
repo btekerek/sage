@@ -13,10 +13,10 @@ class CreateInventoryLayerCommand:
     quantity_received: int
     unit_cost: Decimal
     supplier_ref: str
-    intake_at: datetime = None
-    aggregate_id: uuid.UUID = None
+    intake_at: datetime | None = None
+    aggregate_id: uuid.UUID | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.aggregate_id is None:
             self.aggregate_id = uuid.uuid4()
         if self.intake_at is None:
