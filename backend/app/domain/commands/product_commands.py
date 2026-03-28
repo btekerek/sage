@@ -8,6 +8,7 @@ class CreateProductCommand:
     """
     Command to create a new product in the catalog.
     """
+
     name: str
     unit_price: Decimal
     category_id: uuid.UUID
@@ -23,6 +24,7 @@ class ApplyPriceOverrideCommand:
     """
     Command to change the retail price of an existing product.
     """
+
     product_id: uuid.UUID
     new_price: Decimal
     authorized_by: uuid.UUID

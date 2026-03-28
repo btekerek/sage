@@ -1,7 +1,7 @@
 import uuid
 from dataclasses import dataclass
-from decimal import Decimal
 from datetime import datetime, timezone
+from decimal import Decimal
 
 
 @dataclass
@@ -9,6 +9,7 @@ class CreateInventoryLayerCommand:
     """
     Command to create a new inventory cost layer from a supplier delivery.
     """
+
     product_id: uuid.UUID
     quantity_received: int
     unit_cost: Decimal

@@ -7,6 +7,7 @@ class CreateCategoryCommand:
     """
     Command to create a new product category.
     """
+
     name: str
     parent_category_id: uuid.UUID | None = None
     aggregate_id: uuid.UUID | None = None
