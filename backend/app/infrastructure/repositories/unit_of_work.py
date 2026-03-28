@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.domain.aggregates.base import AggregateRoot
 from app.domain.events.base import BaseEvent
 from app.infrastructure.repositories.event_store_repository import EventStoreRepository
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class UnitOfWork:
@@ -64,5 +63,7 @@ class UnitOfWork:
                     aggregate_id=str(event.aggregate_id),
                     event_type=event.event_type,
                     payload=event.to_dict().get("payload", {}),
-                    causation_id=str(event.causation_id) if event.causation_id else None,
+                    causation_id=(
+                        str(event.causation_id) if event.causation_id else None
+                    ),
                 )

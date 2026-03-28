@@ -3,11 +3,10 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.domain.aggregates.product import Product
 from app.domain.events.events import PriceOverrideEvent
 from app.infrastructure.repositories.event_store_repository import EventStoreRepository
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class ProductRepository:
@@ -37,7 +36,11 @@ class ProductRepository:
             product,
             name=payload.get("name", ""),
             unit_price=Decimal(str(payload.get("unit_price", "0.00"))),
-            category_id=uuid.UUID(payload["category_id"]) if payload.get("category_id") else uuid.uuid4(),
+            category_id=(
+                uuid.UUID(payload["category_id"])
+                if payload.get("category_id")
+                else uuid.uuid4()
+            ),
             aggregate_id=aggregate_id,
             is_active=payload.get("is_active", True),
         )
@@ -51,6 +54,7 @@ class ProductRepository:
 
 # ── Helpers ──────────────────────────────────────────────────────
 
+
 def _to_domain_event(stored):
     """Map a StoredEvent row back to a domain event object for replay."""
     payload = stored.payload or {}
@@ -62,7 +66,11 @@ def _to_domain_event(stored):
             product_id=uuid.UUID(payload.get("product_id", stored.aggregate_id)),
             previous_price=Decimal(str(payload.get("previous_price", "0.00"))),
             new_price=Decimal(str(payload.get("new_price", "0.00"))),
-            authorized_by=uuid.UUID(payload["authorized_by"]) if payload.get("authorized_by") else uuid.uuid4(),
+            authorized_by=(
+                uuid.UUID(payload["authorized_by"])
+                if payload.get("authorized_by")
+                else uuid.uuid4()
+            ),
         )
     # Unknown event types are skipped during replay
     return None
