@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from app.api.routes.categories import router as categories_router
 from app.api.routes.inventory import router as inventory_router
 from app.api.routes.products import router as products_router
+from app.api.routes.sales import router as sales_router
 from app.core.db import close_db, init_db, setup_session_maker
 from fastapi import FastAPI
 
@@ -24,6 +25,7 @@ app = FastAPI(
 app.include_router(products_router)
 app.include_router(categories_router)
 app.include_router(inventory_router)
+app.include_router(sales_router)
 
 
 @app.get("/health")

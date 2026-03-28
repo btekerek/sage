@@ -1,3 +1,8 @@
-from app.api.routes import categories_router, inventory_router, products_router
+from app.api.routes import (
+    categories_router,
+    inventory_router,
+    products_router,
+    sales_router,
+)
 
-__all__ = ["products_router", "categories_router", "inventory_router"]
+__all__ = ["products_router", "categories_router", "inventory_router", "sales_router"]
