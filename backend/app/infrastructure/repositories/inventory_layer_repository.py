@@ -4,7 +4,9 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from app.domain.aggregates.base import AggregateRoot
 from app.domain.aggregates.inventory_layer import InventoryLayer
+from app.domain.events.events import InventoryLayerCreatedEvent
 from app.infrastructure.repositories.event_store_repository import EventStoreRepository
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,10 +26,23 @@ class InventoryLayerRepository:
         if not stored_events:
             return None
 
-        first = stored_events[0]
-        payload = first.payload or {}
+        layer = InventoryLayer.__new__(InventoryLayer)
+        AggregateRoot.__init__(layer, aggregate_id=aggregate_id)
+        domain_events = [_to_domain_event(e) for e in stored_events]
+        layer.load_from_history([e for e in domain_events if e is not None])
+        if not hasattr(layer, "intake_at"):
+            layer.intake_at = datetime.now(timezone.utc)
+        return layer
 
-        layer = InventoryLayer(
+
+def _to_domain_event(stored):
+    """Map a StoredEvent row back to a domain event for replay."""
+    payload = stored.payload or {}
+    if stored.event_type == "InventoryLayerCreatedEvent":
+        return InventoryLayerCreatedEvent(
+            aggregate_id=uuid.UUID(stored.aggregate_id),
+            aggregate_type=stored.aggregate_type,
+            sequence_number=stored.sequence_number,
             product_id=(
                 uuid.UUID(payload["product_id"])
                 if payload.get("product_id")
@@ -36,13 +51,6 @@ class InventoryLayerRepository:
             quantity_received=int(payload.get("quantity_received", 0)),
             unit_cost=Decimal(str(payload.get("unit_cost", "0.00"))),
             supplier_ref=payload.get("supplier_ref", ""),
-            aggregate_id=aggregate_id,
-            intake_at=(
-                datetime.fromisoformat(payload["intake_at"])
-                if payload.get("intake_at")
-                else datetime.now(timezone.utc)
-            ),
         )
-        layer.version = 0
-        layer.version = len(stored_events)
-        return layer
+        return None
+        return None

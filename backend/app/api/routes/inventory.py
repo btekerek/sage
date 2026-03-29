@@ -1,13 +1,15 @@
 from decimal import Decimal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
-from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy.ext.asyncio import AsyncSession
-
+from app.api.read_models import InventoryLayerReadModel
 from app.application.handlers.inventory_handlers import InventoryCommandHandler
 from app.core.db import get_db_session
 from app.domain.commands.inventory_commands import CreateInventoryLayerCommand
+from app.infrastructure.projectors.read_entities import InventoryLayerReadEntity
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/api/inventory-layers", tags=["inventory"])
 
@@ -26,7 +28,9 @@ class InventoryWriteResponse(BaseModel):
     status: str
 
 
-@router.post("", response_model=InventoryWriteResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "", response_model=InventoryWriteResponse, status_code=status.HTTP_201_CREATED
+)
 async def create_inventory_layer(
     payload: CreateInventoryLayerRequest,
     session: AsyncSession = Depends(get_db_session),
@@ -40,3 +44,23 @@ async def create_inventory_layer(
     )
     await handler.handle_create_inventory_layer(command)
     return InventoryWriteResponse(aggregate_id=command.aggregate_id, status="accepted")
+
+
+@router.get("/{inventory_layer_id}", response_model=InventoryLayerReadModel)
+async def get_inventory_layer(
+    inventory_layer_id: UUID,
+    session: AsyncSession = Depends(get_db_session),
+) -> InventoryLayerReadModel:
+    """Retrieve an inventory layer from the read model."""
+    stmt = select(InventoryLayerReadEntity).where(
+        InventoryLayerReadEntity.id == inventory_layer_id
+    )
+    result = await session.execute(stmt)
+    entity = result.scalar_one_or_none()
+
+    if not entity:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Inventory layer not found"
+        )
+
+    return InventoryLayerReadModel.model_validate(entity)

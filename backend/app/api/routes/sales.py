@@ -1,6 +1,7 @@
 from decimal import Decimal
 from uuid import UUID
 
+from app.api.read_models import DraftSaleReadModel
 from app.application.handlers.sale_handlers import SaleCommandHandler
 from app.core.db import get_db_session
 from app.domain.commands.sale_commands import (
@@ -11,8 +12,10 @@ from app.domain.commands.sale_commands import (
     UpdateLineItemCommand,
     VoidSaleCommand,
 )
+from app.infrastructure.projectors.read_entities import DraftSaleReadEntity
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/api/draft-sales", tags=["draft-sales"])
@@ -173,3 +176,40 @@ async def void_sale(
         ) from exc
 
     return SaleWriteResponse(aggregate_id=sale_id, status="accepted")
+
+
+@router.get("/{sale_id}", response_model=DraftSaleReadModel)
+async def get_draft_sale(
+    sale_id: UUID,
+    session: AsyncSession = Depends(get_db_session),
+) -> DraftSaleReadModel:
+    """Retrieve a draft sale from the read model."""
+    stmt = select(DraftSaleReadEntity).where(DraftSaleReadEntity.id == sale_id)
+    result = await session.execute(stmt)
+    entity = result.scalar_one_or_none()
+
+    if not entity:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Draft sale not found"
+        )
+
+    # Convert line_items_json back to list for the Pydantic model
+    import json
+
+    line_items = json.loads(entity.line_items_json or "[]")
+    return DraftSaleReadModel(
+        id=entity.id,
+        customer_id=entity.customer_id,
+        line_items=[  # type: ignore
+            {
+                "product_id": item["product_id"],
+                "quantity": item["quantity"],
+                "unit_price": item["unit_price"],
+            }
+            for item in line_items
+        ],
+        total_amount=Decimal(str(entity.total_amount)),
+        status=entity.status,
+        created_at=entity.created_at,
+        version=entity.version,
+    )

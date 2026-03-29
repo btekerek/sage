@@ -67,3 +67,30 @@ class UnitOfWork:
                         str(event.causation_id) if event.causation_id else None
                     ),
                 )
+                # Project event to read model
+                await self._project_event(event)
+
+    async def _project_event(self, event: BaseEvent) -> None:
+        """Project an event to the appropriate read model."""
+        # Lazy import to avoid circular dependencies
+        from app.infrastructure.projectors.category_projector import CategoryProjector
+        from app.infrastructure.projectors.draft_sale_projector import (
+            DraftSaleProjector,
+        )
+        from app.infrastructure.projectors.inventory_layer_projector import (
+            InventoryLayerProjector,
+        )
+        from app.infrastructure.projectors.product_projector import ProductProjector
+
+        if event.aggregate_type == "Product":
+            projector = ProductProjector()
+            await projector.project(event, self._session)
+        elif event.aggregate_type == "Category":
+            projector = CategoryProjector()
+            await projector.project(event, self._session)
+        elif event.aggregate_type == "InventoryLayer":
+            projector = InventoryLayerProjector()
+            await projector.project(event, self._session)
+        elif event.aggregate_type == "DraftSale":
+            projector = DraftSaleProjector()
+            await projector.project(event, self._session)

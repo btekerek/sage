@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 from app.domain.aggregates.base import AggregateRoot
-from app.domain.events.events import PriceOverrideEvent
+from app.domain.events.events import PriceOverrideEvent, ProductCreatedEvent
 
 
 @dataclass
@@ -22,10 +22,15 @@ class Product(AggregateRoot):
         is_active: bool = True,
     ):
         super().__init__(aggregate_id)
-        self.name = name
-        self.unit_price = unit_price
-        self.category_id = category_id
-        self.is_active = is_active
+        event = ProductCreatedEvent(
+            aggregate_id=self.aggregate_id,
+            aggregate_type="Product",
+            name=name,
+            unit_price=unit_price,
+            category_id=category_id,
+            is_active=is_active,
+        )
+        self._raise_event(event)
 
     def apply_price_override(
         self,
@@ -64,3 +69,9 @@ class Product(AggregateRoot):
 
     def _on_PriceOverrideEvent(self, event: PriceOverrideEvent) -> None:
         self.unit_price = event.new_price
+
+    def _on_ProductCreatedEvent(self, event: ProductCreatedEvent) -> None:
+        self.name = event.name
+        self.unit_price = event.unit_price
+        self.category_id = event.category_id
+        self.is_active = event.is_active

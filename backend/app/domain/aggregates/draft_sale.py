@@ -4,7 +4,15 @@ from decimal import Decimal
 from enum import Enum
 
 from app.domain.aggregates.base import AggregateRoot
-from app.domain.events.events import SaleEvent, SaleLineItem, VoidEvent
+from app.domain.events.events import (
+    DraftSaleCreatedEvent,
+    LineItemAddedEvent,
+    LineItemRemovedEvent,
+    LineItemUpdatedEvent,
+    SaleEvent,
+    SaleLineItem,
+    VoidEvent,
+)
 
 
 class SaleStatus(Enum):
@@ -40,10 +48,13 @@ class DraftSale(AggregateRoot):
         aggregate_id: uuid.UUID | None = None,
     ):
         super().__init__(aggregate_id)
-        self.operator_id = operator_id
-        self.session_id = session_id
-        self.status = SaleStatus.EMPTY
-        self.items: dict[uuid.UUID, CartItem] = {}
+        event = DraftSaleCreatedEvent(
+            aggregate_id=self.aggregate_id,
+            aggregate_type="DraftSale",
+            operator_id=operator_id or uuid.uuid4(),
+            session_id=session_id or uuid.uuid4(),
+        )
+        self._raise_event(event)
 
     # ── Cart operations ────────────────────────────────────────
 
@@ -66,24 +77,26 @@ class DraftSale(AggregateRoot):
                 f"available {available_stock}."
             )
 
-        if product_id in self.items:
-            self.items[product_id].quantity += quantity
-        else:
-            self.items[product_id] = CartItem(
-                product_id=product_id,
-                product_name=product_name,
-                unit_price=unit_price,
-                quantity=quantity,
-            )
-        self.status = SaleStatus.ACTIVE
+        event = LineItemAddedEvent(
+            aggregate_id=self.aggregate_id,
+            aggregate_type="DraftSale",
+            product_id=product_id,
+            product_name=product_name,
+            unit_price=unit_price,
+            quantity=quantity,
+        )
+        self._raise_event(event)
 
     def remove_item(self, product_id: uuid.UUID) -> None:
         self._guard_not_terminal()
         if product_id not in self.items:
             raise ValueError("Item not in cart.")
-        del self.items[product_id]
-        if not self.items:
-            self.status = SaleStatus.EMPTY
+        event = LineItemRemovedEvent(
+            aggregate_id=self.aggregate_id,
+            aggregate_type="DraftSale",
+            product_id=product_id,
+        )
+        self._raise_event(event)
 
     def update_quantity(
         self,
@@ -100,7 +113,13 @@ class DraftSale(AggregateRoot):
             raise ValueError(
                 f"Insufficient stock — requested {quantity}, available {available_stock}."
             )
-        self.items[product_id].quantity = quantity
+        event = LineItemUpdatedEvent(
+            aggregate_id=self.aggregate_id,
+            aggregate_type="DraftSale",
+            product_id=product_id,
+            quantity=quantity,
+        )
+        self._raise_event(event)
 
     # ── Transaction operations ─────────────────────────────────
 
@@ -157,6 +176,32 @@ class DraftSale(AggregateRoot):
 
     def _on_VoidEvent(self, event: VoidEvent) -> None:
         self.status = SaleStatus.VOIDED
+
+    def _on_DraftSaleCreatedEvent(self, event: DraftSaleCreatedEvent) -> None:
+        self.operator_id = event.operator_id
+        self.session_id = event.session_id
+        self.status = SaleStatus.EMPTY
+        self.items: dict[uuid.UUID, CartItem] = {}
+
+    def _on_LineItemAddedEvent(self, event: LineItemAddedEvent) -> None:
+        if event.product_id in self.items:
+            self.items[event.product_id].quantity += event.quantity
+        else:
+            self.items[event.product_id] = CartItem(
+                product_id=event.product_id,
+                product_name=event.product_name,
+                unit_price=event.unit_price,
+                quantity=event.quantity,
+            )
+        self.status = SaleStatus.ACTIVE
+
+    def _on_LineItemRemovedEvent(self, event: LineItemRemovedEvent) -> None:
+        del self.items[event.product_id]
+        if not self.items:
+            self.status = SaleStatus.EMPTY
+
+    def _on_LineItemUpdatedEvent(self, event: LineItemUpdatedEvent) -> None:
+        self.items[event.product_id].quantity = event.quantity
 
     # ── Guards ─────────────────────────────────────────────────
 

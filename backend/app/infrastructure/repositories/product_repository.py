@@ -3,8 +3,9 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 
+from app.domain.aggregates.base import AggregateRoot
 from app.domain.aggregates.product import Product
-from app.domain.events.events import PriceOverrideEvent
+from app.domain.events.events import PriceOverrideEvent, ProductCreatedEvent
 from app.infrastructure.repositories.event_store_repository import EventStoreRepository
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,28 +28,10 @@ class ProductRepository:
         if not stored_events:
             return None
 
-        # Peek at the first event to recover constructor arguments
-        first = stored_events[0]
-        payload = first.payload or {}
-
         product = Product.__new__(Product)
-        Product.__init__(
-            product,
-            name=payload.get("name", ""),
-            unit_price=Decimal(str(payload.get("unit_price", "0.00"))),
-            category_id=(
-                uuid.UUID(payload["category_id"])
-                if payload.get("category_id")
-                else uuid.uuid4()
-            ),
-            aggregate_id=aggregate_id,
-            is_active=payload.get("is_active", True),
-        )
-        # Reset version — load_from_history will increment it per event
-        product.version = 0
-
+        AggregateRoot.__init__(product, aggregate_id=aggregate_id)
         domain_events = [_to_domain_event(e) for e in stored_events]
-        product.load_from_history(domain_events)
+        product.load_from_history([e for e in domain_events if e is not None])
         return product
 
 
@@ -58,7 +41,21 @@ class ProductRepository:
 def _to_domain_event(stored):
     """Map a StoredEvent row back to a domain event object for replay."""
     payload = stored.payload or {}
-    if stored.event_type == "PriceOverrideEvent":
+    if stored.event_type == "ProductCreatedEvent":
+        return ProductCreatedEvent(
+            aggregate_id=uuid.UUID(stored.aggregate_id),
+            aggregate_type=stored.aggregate_type,
+            sequence_number=stored.sequence_number,
+            name=payload.get("name", ""),
+            unit_price=Decimal(str(payload.get("unit_price", "0.00"))),
+            category_id=(
+                uuid.UUID(payload["category_id"])
+                if payload.get("category_id")
+                else uuid.uuid4()
+            ),
+            is_active=payload.get("is_active", True),
+        )
+    elif stored.event_type == "PriceOverrideEvent":
         return PriceOverrideEvent(
             aggregate_id=uuid.UUID(stored.aggregate_id),
             aggregate_type=stored.aggregate_type,
@@ -73,4 +70,5 @@ def _to_domain_event(stored):
             ),
         )
     # Unknown event types are skipped during replay
+    return None
     return None
