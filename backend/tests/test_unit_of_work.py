@@ -1,3 +1,5 @@
+# mypy: disable-error-code=import-not-found
+# pyright: reportMissingImports=false
 import uuid
 from decimal import Decimal
 
@@ -107,8 +109,8 @@ async def test_product_repository_reconstructs_state() -> None:
 
     # Reconstruct via repository
     async with session_maker() as session:
-        repo = ProductRepository(session)
-        product = await repo.get(product_id)
+        product_repo = ProductRepository(session)
+        product = await product_repo.get(product_id)
 
     assert product is not None
     assert product.unit_price == Decimal("14.99")

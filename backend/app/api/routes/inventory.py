@@ -43,6 +43,7 @@ async def create_inventory_layer(
         supplier_ref=payload.supplier_ref,
     )
     await handler.handle_create_inventory_layer(command)
+    assert command.aggregate_id is not None
     return InventoryWriteResponse(aggregate_id=command.aggregate_id, status="accepted")
 
 
@@ -63,4 +64,5 @@ async def get_inventory_layer(
             status_code=status.HTTP_404_NOT_FOUND, detail="Inventory layer not found"
         )
 
+    return InventoryLayerReadModel.model_validate(entity)
     return InventoryLayerReadModel.model_validate(entity)

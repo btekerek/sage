@@ -153,7 +153,7 @@ class DraftSale(AggregateRoot):
 
     def void(self, reason: str = "") -> VoidEvent:
         self._guard_not_terminal()
-        event = VoidEvent(
+        event = VoidEvent(  # type: ignore[call-arg]
             aggregate_id=self.aggregate_id,
             aggregate_type="DraftSale",
             operator_id=self.operator_id,
@@ -167,7 +167,10 @@ class DraftSale(AggregateRoot):
 
     @property
     def total(self) -> Decimal:
-        return sum(item.line_total for item in self.items.values())
+        total = Decimal("0.00")
+        for item in self.items.values():
+            total += item.line_total
+        return total
 
     # ── Event handlers ─────────────────────────────────────────
 
