@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import uuid
 
+from app.domain.aggregates.base import AggregateRoot
 from app.domain.aggregates.category import Category
+from app.domain.events.events import CategoryCreatedEvent
 from app.infrastructure.repositories.event_store_repository import EventStoreRepository
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,19 +23,27 @@ class CategoryRepository:
         if not stored_events:
             return None
 
-        first = stored_events[0]
-        payload = first.payload or {}
+        category = Category.__new__(Category)
+        AggregateRoot.__init__(category, aggregate_id=aggregate_id)
+        domain_events = [_to_domain_event(e) for e in stored_events]
+        category.load_from_history([e for e in domain_events if e is not None])
+        return category
 
-        category = Category(
+
+def _to_domain_event(stored):
+    """Map a StoredEvent row back to a domain event for replay."""
+    payload = stored.payload or {}
+    if stored.event_type == "CategoryCreatedEvent":
+        return CategoryCreatedEvent(
+            aggregate_id=uuid.UUID(stored.aggregate_id),
+            aggregate_type=stored.aggregate_type,
+            sequence_number=stored.sequence_number,
             name=payload.get("name", ""),
-            aggregate_id=aggregate_id,
             parent_category_id=(
                 uuid.UUID(payload["parent_category_id"])
                 if payload.get("parent_category_id")
                 else None
             ),
         )
-        category.version = 0
-        # Category has no event handlers yet; version is set from stream length
-        category.version = len(stored_events)
-        return category
+        return None
+        return None

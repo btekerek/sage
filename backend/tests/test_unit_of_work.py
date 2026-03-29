@@ -59,8 +59,9 @@ async def test_uow_persists_pending_events() -> None:
         repo = EventStoreRepository(session)
         stream = await repo.load_stream(str(product_id))
 
-    assert len(stream) == 1
-    assert stream[0].event_type == "PriceOverrideEvent"
+    assert len(stream) == 2
+    assert stream[0].event_type == "ProductCreatedEvent"
+    assert stream[1].event_type == "PriceOverrideEvent"
     assert stream[0].aggregate_type == "Product"
 
     await engine.dispose()

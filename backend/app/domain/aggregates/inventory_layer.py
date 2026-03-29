@@ -1,8 +1,9 @@
 import uuid
-from decimal import Decimal
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from app.domain.aggregates.base import AggregateRoot
+from app.domain.events.events import InventoryLayerCreatedEvent
 
 
 class InventoryLayer(AggregateRoot):
@@ -22,11 +23,16 @@ class InventoryLayer(AggregateRoot):
         intake_at: datetime | None = None,
     ):
         super().__init__(aggregate_id)
-        self.product_id = product_id
-        self.quantity_received = quantity_received
-        self.quantity_remaining = quantity_received
-        self.unit_cost = unit_cost
-        self.supplier_ref = supplier_ref
+        event = InventoryLayerCreatedEvent(
+            aggregate_id=self.aggregate_id,
+            aggregate_type="InventoryLayer",
+            product_id=product_id,
+            quantity_received=quantity_received,
+            unit_cost=unit_cost,
+            supplier_ref=supplier_ref,
+        )
+        self._raise_event(event)
+        # intake_at is not in the event; set it directly after raising
         self.intake_at = intake_at or datetime.now(timezone.utc)
 
     def consume(self, qty: int) -> Decimal:
@@ -47,3 +53,10 @@ class InventoryLayer(AggregateRoot):
     @property
     def is_exhausted(self) -> bool:
         return self.quantity_remaining == 0
+
+    def _on_InventoryLayerCreatedEvent(self, event: InventoryLayerCreatedEvent) -> None:
+        self.product_id = event.product_id
+        self.quantity_received = event.quantity_received
+        self.quantity_remaining = event.quantity_received
+        self.unit_cost = event.unit_cost
+        self.supplier_ref = event.supplier_ref

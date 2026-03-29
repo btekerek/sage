@@ -1,3 +1,5 @@
+from app.domain.commands.category_commands import CreateCategoryCommand
+from app.domain.commands.inventory_commands import CreateInventoryLayerCommand
 from app.domain.commands.product_commands import (
     ApplyPriceOverrideCommand,
     CreateProductCommand,
@@ -9,12 +11,6 @@ from app.domain.commands.sale_commands import (
     RemoveLineItemCommand,
     UpdateLineItemCommand,
     VoidSaleCommand,
-)
-from app.domain.commands.category_commands import (
-    CreateCategoryCommand,
-)
-from app.domain.commands.inventory_commands import (
-    CreateInventoryLayerCommand,
 )
 
 __all__ = [

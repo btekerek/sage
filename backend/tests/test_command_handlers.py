@@ -2,24 +2,23 @@ import uuid
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import delete
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
+from app.application.handlers.category_handlers import CategoryCommandHandler
+from app.application.handlers.inventory_handlers import InventoryCommandHandler
+from app.application.handlers.product_handlers import ProductCommandHandler
+from app.application.handlers.sale_handlers import SaleCommandHandler
 from app.core.settings import get_settings
 from app.domain.commands import (
-    CreateProductCommand,
-    ApplyPriceOverrideCommand,
-    CreateDraftSaleCommand,
     AddLineItemCommand,
+    ApplyPriceOverrideCommand,
     CreateCategoryCommand,
+    CreateDraftSaleCommand,
     CreateInventoryLayerCommand,
+    CreateProductCommand,
 )
 from app.infrastructure.event_store.models import StoredEvent
 from app.infrastructure.repositories.event_store_repository import EventStoreRepository
-from app.application.handlers.product_handlers import ProductCommandHandler
-from app.application.handlers.sale_handlers import SaleCommandHandler
-from app.application.handlers.category_handlers import CategoryCommandHandler
-from app.application.handlers.inventory_handlers import InventoryCommandHandler
+from sqlalchemy import delete
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 
 def make_engine():
@@ -57,9 +56,8 @@ async def test_create_product_command():
         repo = EventStoreRepository(session)
         stream = await repo.load_stream(str(product_id))
 
-    # Product has no explicit creation event, but when initialized it has version 0
-    # and no events raised. Events are only raised on mutations.
-    assert len(stream) == 0  # No events because Product doesn't raise on __init__
+    assert len(stream) == 1
+    assert stream[0].event_type == "ProductCreatedEvent"
 
     await engine.dispose()
 
@@ -69,9 +67,9 @@ async def test_apply_price_override_command():
     """
     Directly apply a price override to a product in a single transaction.
     Verify the PriceOverrideEvent is persisted and state is updated.
-    
-    Note: Since Product doesn't raise events on __init__, we test the override
-    directly which DOES raise an event.
+
+    Product now raises a creation event on initialization, so this flow writes
+    both ProductCreatedEvent and PriceOverrideEvent.
     """
     engine = make_engine()
     session_maker = async_sessionmaker(engine, expire_on_commit=False)
@@ -89,7 +87,7 @@ async def test_apply_price_override_command():
     async with session_maker() as session:
         from app.domain.aggregates.product import Product
         from app.infrastructure.repositories.unit_of_work import UnitOfWork
-        
+
         product = Product(
             name="Test Widget",
             unit_price=Decimal("9.99"),
@@ -100,7 +98,7 @@ async def test_apply_price_override_command():
             new_price=Decimal("14.99"),
             authorized_by=operator_id,
         )
-        
+
         async with UnitOfWork(session) as uow:
             uow.track(product)
 
@@ -108,8 +106,9 @@ async def test_apply_price_override_command():
         repo = EventStoreRepository(session)
         stream = await repo.load_stream(str(product_id))
 
-    assert len(stream) == 1
-    assert stream[0].event_type == "PriceOverrideEvent"
+    assert len(stream) == 2
+    assert stream[0].event_type == "ProductCreatedEvent"
+    assert stream[1].event_type == "PriceOverrideEvent"
 
     await engine.dispose()
 
@@ -144,8 +143,8 @@ async def test_create_draft_sale_command():
         repo = EventStoreRepository(session)
         stream = await repo.load_stream(str(sale_id))
 
-    # Similar to Product, DraftSale doesn't raise events on __init__
-    assert len(stream) == 0
+    assert len(stream) == 1
+    assert stream[0].event_type == "DraftSaleCreatedEvent"
 
     await engine.dispose()
 
@@ -177,7 +176,8 @@ async def test_create_category_command():
         repo = EventStoreRepository(session)
         stream = await repo.load_stream(str(category_id))
 
-    assert len(stream) == 0  # No events on creation
+    assert len(stream) == 1
+    assert stream[0].event_type == "CategoryCreatedEvent"
 
     await engine.dispose()
 
@@ -213,6 +213,7 @@ async def test_create_inventory_layer_command():
         repo = EventStoreRepository(session)
         stream = await repo.load_stream(str(layer_id))
 
-    assert len(stream) == 0  # No events on creation
+    assert len(stream) == 1
+    assert stream[0].event_type == "InventoryLayerCreatedEvent"
 
     await engine.dispose()
