@@ -1,3 +1,5 @@
+# mypy: disable-error-code=import-not-found
+# pyright: reportMissingImports=false
 """Create read-side projection tables.
 
 Revision ID: 0002_create_read_entities

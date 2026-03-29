@@ -1,15 +1,12 @@
+# mypy: disable-error-code=import-not-found
+# pyright: reportMissingImports=false
 """Integration tests for read-side projectors and query endpoints."""
 
 import json
 from decimal import Decimal
 from uuid import uuid4
 
-"""Integration tests for read-side projectors and query endpoints."""
-import json
-from decimal import Decimal
-from uuid import uuid4
-
-import pytest
+import pytest  # type: ignore[import-not-found]
 from app.application.handlers.category_handlers import CategoryCommandHandler
 from app.application.handlers.inventory_handlers import InventoryCommandHandler
 from app.application.handlers.product_handlers import ProductCommandHandler

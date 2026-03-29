@@ -1,8 +1,11 @@
+# mypy: ignore-errors
+# pyright: reportMissingImports=false
+# cspell:ignore poolclass
 import asyncio
 from logging.config import fileConfig
 
-from alembic import context
-from app.infrastructure.event_store.models import Base
+from alembic import context  # type: ignore
+from app.infrastructure.event_store.models import Base  # type: ignore
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 

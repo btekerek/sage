@@ -1,17 +1,15 @@
 from decimal import Decimal
 from uuid import UUID
 
-from app.api.read_models import DraftSaleReadModel
+from app.api.read_models import DraftSaleLineItemRead, DraftSaleReadModel
 from app.application.handlers.sale_handlers import SaleCommandHandler
 from app.core.db import get_db_session
-from app.domain.commands.sale_commands import (
-    AddLineItemCommand,
-    CreateDraftSaleCommand,
-    FinalizeSaleCommand,
-    RemoveLineItemCommand,
-    UpdateLineItemCommand,
-    VoidSaleCommand,
-)
+from app.domain.commands.sale_commands import (AddLineItemCommand,
+                                               CreateDraftSaleCommand,
+                                               FinalizeSaleCommand,
+                                               RemoveLineItemCommand,
+                                               UpdateLineItemCommand,
+                                               VoidSaleCommand)
 from app.infrastructure.projectors.read_entities import DraftSaleReadEntity
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -198,14 +196,14 @@ async def get_draft_sale(
 
     line_items = json.loads(entity.line_items_json or "[]")
     return DraftSaleReadModel(
-        id=entity.id,
+        id=UUID(str(entity.id)),
         customer_id=entity.customer_id,
-        line_items=[  # type: ignore
-            {
-                "product_id": item["product_id"],
-                "quantity": item["quantity"],
-                "unit_price": item["unit_price"],
-            }
+        line_items=[
+            DraftSaleLineItemRead(
+                product_id=UUID(str(item["product_id"])),
+                quantity=int(item["quantity"]),
+                unit_price=Decimal(str(item["unit_price"])),
+            )
             for item in line_items
         ],
         total_amount=Decimal(str(entity.total_amount)),

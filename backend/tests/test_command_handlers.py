@@ -1,3 +1,5 @@
+# mypy: disable-error-code=import-not-found
+# pyright: reportMissingImports=false
 import uuid
 from decimal import Decimal
 

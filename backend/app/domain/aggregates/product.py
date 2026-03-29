@@ -13,6 +13,11 @@ class Product(AggregateRoot):
     Owns its own price history through PriceOverrideEvents.
     """
 
+    name: str
+    unit_price: Decimal
+    category_id: uuid.UUID
+    is_active: bool
+
     def __init__(
         self,
         name: str,

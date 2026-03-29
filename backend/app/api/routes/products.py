@@ -49,6 +49,7 @@ async def create_product(
         category_id=payload.category_id,
     )
     await handler.handle_create_product(command)
+    assert command.aggregate_id is not None
     return ProductWriteResponse(aggregate_id=command.aggregate_id, status="accepted")
 
 

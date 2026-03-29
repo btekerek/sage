@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from typing import Any
+
 from app.domain.aggregates.base import AggregateRoot
 from app.domain.events.base import BaseEvent
+from app.infrastructure.projectors.base import BaseProjector
 from app.infrastructure.repositories.event_store_repository import EventStoreRepository
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -82,15 +85,16 @@ class UnitOfWork:
         )
         from app.infrastructure.projectors.product_projector import ProductProjector
 
+        projector: BaseProjector[Any] | None = None
         if event.aggregate_type == "Product":
             projector = ProductProjector()
-            await projector.project(event, self._session)
         elif event.aggregate_type == "Category":
             projector = CategoryProjector()
-            await projector.project(event, self._session)
         elif event.aggregate_type == "InventoryLayer":
             projector = InventoryLayerProjector()
-            await projector.project(event, self._session)
         elif event.aggregate_type == "DraftSale":
             projector = DraftSaleProjector()
+
+        if projector is not None:
+            await projector.project(event, self._session)
             await projector.project(event, self._session)
