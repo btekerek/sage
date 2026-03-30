@@ -7,6 +7,8 @@ from app.api.routes.sales import router as sales_router
 from app.core.db import close_db, init_db, setup_session_maker
 from fastapi import FastAPI
 from app.api.routes.invoices import router as invoices_router
+from fastapi.middleware.cors import CORSMiddleware
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -22,6 +24,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(products_router)
 app.include_router(categories_router)
 app.include_router(inventory_router)
