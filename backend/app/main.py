@@ -8,6 +8,7 @@ from app.core.db import close_db, init_db, setup_session_maker
 from fastapi import FastAPI
 from app.api.routes.invoices import router as invoices_router
 from fastapi.middleware.cors import CORSMiddleware
+from app.api.routes.replenishment import router as replenishment_router
 
 
 @asynccontextmanager
@@ -36,6 +37,7 @@ app.include_router(categories_router)
 app.include_router(inventory_router)
 app.include_router(sales_router)
 app.include_router(invoices_router)
+app.include_router(replenishment_router)
 
 
 @app.get("/health")
