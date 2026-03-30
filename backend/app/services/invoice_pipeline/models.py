@@ -9,11 +9,12 @@ class ExtractedLineItem(BaseModel):
 
     product_name: str
     quantity: int
-    unit: str  # e.g. "kg", "pcs", "box"
+    unit: str
     unit_price: Decimal
     line_total: Decimal
-    confidence: float  # 0.0 (guessed) → 1.0 (certain)
-    flags: list[str]   # e.g. ["line_total_mismatch", "low_confidence"]
+    packaging_size: int = 1
+    confidence: float
+    flags: list[str]
 
 
 class InvoiceHeader(BaseModel):
@@ -23,6 +24,7 @@ class InvoiceHeader(BaseModel):
     invoice_ref: str | None = None
     invoice_date: str | None = None
     footer_total: Decimal | None = None
+    footer_net_total: Decimal | None = None
 
 
 class InvoiceExtractionResult(BaseModel):
@@ -31,7 +33,9 @@ class InvoiceExtractionResult(BaseModel):
     header: InvoiceHeader
     line_items: list[ExtractedLineItem]
     overall_confidence: float
-    requires_review: bool          # True if any item is below threshold or flagged
-    auto_accepted_count: int       # Items that passed threshold — no manager action needed
-    flagged_count: int             # Items that need manager correction
-    raw_text: str                  # Full extracted text, useful for debugging
+    requires_review: bool
+    auto_accepted_count: int
+    flagged_count: int
+    raw_text: str
+    computed_net_total: str = "0.00"
+    footer_discrepancy: str | None = None
