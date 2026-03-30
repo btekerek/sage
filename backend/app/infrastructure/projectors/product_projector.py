@@ -2,22 +2,18 @@
 
 from uuid import UUID
 
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.domain.events.base import BaseEvent
 from app.infrastructure.projectors.base import BaseProjector
 from app.infrastructure.projectors.read_entities import ProductReadEntity
-from sqlalchemy import insert, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class ProductProjector(BaseProjector):
-    """Projector for Product aggregate events to read model."""
 
     async def project(self, event: BaseEvent, session: AsyncSession) -> None:
-        """
-        Project a Product event into the read model.
-
-        Handles ProductCreatedEvent and ProductPriceOverriddenEvent.
-        """
         if event.event_type == "ProductCreatedEvent":
             await self._handle_product_created(event, session)
         elif event.event_type == "PriceOverrideEvent":
@@ -26,7 +22,6 @@ class ProductProjector(BaseProjector):
     async def get_current_state(
         self, aggregate_id: str, session: AsyncSession
     ) -> ProductReadEntity | None:
-        """Retrieve the current product read model."""
         stmt = select(ProductReadEntity).where(
             ProductReadEntity.id == UUID(aggregate_id)
         )
@@ -36,23 +31,32 @@ class ProductProjector(BaseProjector):
     async def _handle_product_created(
         self, event: BaseEvent, session: AsyncSession
     ) -> None:
-        """Handle ProductCreatedEvent projection."""
         payload = event.to_dict().get("payload", {})
-        stmt = insert(ProductReadEntity).values(
-            id=event.aggregate_id,
-            name=payload.get("name"),
-            category_id=UUID(payload.get("category_id")),
-            base_price=float(payload.get("unit_price", 0)),
-            current_price=float(payload.get("unit_price", 0)),
-            created_at=event.occurred_at,
-            version=event.sequence_number,
+        stmt = (
+            pg_insert(ProductReadEntity)
+            .values(
+                id=event.aggregate_id,
+                name=payload.get("name"),
+                category_id=UUID(payload.get("category_id")),
+                base_price=float(payload.get("unit_price", 0)),
+                current_price=float(payload.get("unit_price", 0)),
+                created_at=event.occurred_at,
+                version=event.sequence_number,
+            )
+            .on_conflict_do_update(
+                index_elements=["id"],
+                set_={
+                    "name": payload.get("name"),
+                    "current_price": float(payload.get("unit_price", 0)),
+                    "version": event.sequence_number,
+                },
+            )
         )
         await session.execute(stmt)
 
     async def _handle_price_overridden(
         self, event: BaseEvent, session: AsyncSession
     ) -> None:
-        """Handle ProductPriceOverriddenEvent projection."""
         payload = event.to_dict().get("payload", {})
         stmt = (
             update(ProductReadEntity)
