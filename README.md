@@ -23,21 +23,65 @@ through incremental projection.
 | Real-time | WebSockets (FastAPI native) |
 
 ## Setup
+
 ```bash
-# 1. Copy environment variables
+# 1. Copy and fill in environment variables
 cp .env.example .env
-# Edit .env with your values
+# Edit .env — at minimum set ANTHROPIC_API_KEY and SECRET_KEY
 
-# 2. Start with Docker
-docker compose up
+# 2. Start all services
+docker compose up -d
 
-# OR manually:
+# 3. Run database migrations
+docker compose exec backend alembic upgrade head
+```
 
+## Running
+
+```bash
+# Start only the database and backend (skip frontend)
+docker compose up -d db backend
+
+# Start everything including frontend
+docker compose up -d
+
+# View backend logs
+docker compose logs -f backend
+
+# Stop all services
+docker compose down
+```
+
+## API
+
+Once running, the auto-generated API docs are available at:
+
+- Swagger UI: http://localhost:8000/docs
+- ReDoc: http://localhost:8000/redoc
+- Health check: http://localhost:8000/health
+
+## Testing
+
+```bash
+# Run the full test suite
+docker compose exec backend pytest tests -v
+
+# Run a specific test file
+docker compose exec backend pytest tests/test_unit_of_work.py -v
+
+# Run a specific test
+docker compose exec backend pytest tests/test_unit_of_work.py::test_uow_persists_pending_events -v
+```
+
+## Manual setup (without Docker)
+
+```bash
 # Backend
 cd backend
 python -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+alembic upgrade head
 uvicorn app.main:app --reload
 
 # Frontend
