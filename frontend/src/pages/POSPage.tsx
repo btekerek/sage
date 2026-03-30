@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, Product, CartItem } from '../api/client'
+import client from '../api/client'
 import { v4 as uuidv4 } from 'uuid'
 
 export default function POSPage() {
@@ -40,19 +41,34 @@ export default function POSPage() {
         1,
         999
       )
-      setCart(prev => existing
-        ? prev.map(i => i.product.id === product.id
-            ? { ...i, quantity: newQty }
-            : i)
-        : [...prev, { product, quantity: 1 }]
+      setCart(prev =>
+        existing
+          ? prev.map(i =>
+              i.product.id === product.id ? { ...i, quantity: newQty } : i
+            )
+          : [...prev, { product, quantity: 1 }]
       )
     } catch (e) {
       setStatus('Failed to add item')
     }
   }
 
+  async function removeFromCart(productId: string) {
+    if (!saleId) return
+    try {
+      await client.delete(`/api/draft-sales/${saleId}/items/${productId}`)
+      setCart(prev => prev.filter(i => i.product.id !== productId))
+      setStatus('')
+    } catch (e) {
+      setStatus('Failed to remove item')
+    }
+  }
+
   function cartTotal() {
-    return cart.reduce((sum, i) => sum + i.product.current_price * i.quantity, 0)
+    return cart.reduce(
+      (sum, i) => sum + Number(i.product.current_price) * i.quantity,
+      0
+    )
   }
 
   async function finalize(method: 'cash' | 'card') {
@@ -68,11 +84,12 @@ export default function POSPage() {
     }
   }
 
-  if (loading) return (
-    <div className="min-h-screen flex items-center justify-center">
-      <p className="text-gray-500">Loading...</p>
-    </div>
-  )
+  if (loading)
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <p className="text-gray-500">Loading...</p>
+      </div>
+    )
 
   return (
     <div className="min-h-screen flex">
@@ -116,14 +133,23 @@ export default function POSPage() {
             <p className="text-gray-400 text-sm">No items yet</p>
           )}
           {cart.map(item => (
-            <div key={item.product.id} className="flex justify-between items-center">
-              <div>
+            <div
+              key={item.product.id}
+              className="flex justify-between items-center"
+            >
+              <div className="flex-1">
                 <p className="text-sm font-medium">{item.product.name}</p>
                 <p className="text-xs text-gray-500">x{item.quantity}</p>
               </div>
-              <p className="text-sm font-bold">
+              <p className="text-sm font-bold mr-3">
                 ${(Number(item.product.current_price) * item.quantity).toFixed(2)}
               </p>
+              <button
+                onClick={() => removeFromCart(item.product.id)}
+                className="text-red-400 hover:text-red-600 text-sm font-bold"
+              >
+                ✕
+              </button>
             </div>
           ))}
         </div>
