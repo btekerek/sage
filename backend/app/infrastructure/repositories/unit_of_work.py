@@ -5,7 +5,8 @@ from typing import Any
 from app.domain.aggregates.base import AggregateRoot
 from app.domain.events.base import BaseEvent
 from app.infrastructure.projectors.base import BaseProjector
-from app.infrastructure.repositories.event_store_repository import EventStoreRepository
+from app.infrastructure.repositories.event_store_repository import \
+    EventStoreRepository
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -76,14 +77,14 @@ class UnitOfWork:
     async def _project_event(self, event: BaseEvent) -> None:
         """Project an event to the appropriate read model."""
         # Lazy import to avoid circular dependencies
-        from app.infrastructure.projectors.category_projector import CategoryProjector
-        from app.infrastructure.projectors.draft_sale_projector import (
-            DraftSaleProjector,
-        )
-        from app.infrastructure.projectors.inventory_layer_projector import (
-            InventoryLayerProjector,
-        )
-        from app.infrastructure.projectors.product_projector import ProductProjector
+        from app.infrastructure.projectors.category_projector import \
+            CategoryProjector
+        from app.infrastructure.projectors.draft_sale_projector import \
+            DraftSaleProjector
+        from app.infrastructure.projectors.inventory_layer_projector import \
+            InventoryLayerProjector
+        from app.infrastructure.projectors.product_projector import \
+            ProductProjector
 
         projector: BaseProjector[Any] | None = None
         if event.aggregate_type == "Product":
@@ -96,5 +97,4 @@ class UnitOfWork:
             projector = DraftSaleProjector()
 
         if projector is not None:
-            await projector.project(event, self._session)
             await projector.project(event, self._session)
