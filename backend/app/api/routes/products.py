@@ -92,3 +92,11 @@ async def get_product(
         )
 
     return ProductReadModel.model_validate(entity)
+
+@router.get("", response_model=list[ProductReadModel])
+async def list_products(
+    session: AsyncSession = Depends(get_db_session),
+) -> list[ProductReadModel]:
+    stmt = select(ProductReadEntity)
+    result = await session.execute(stmt)
+    return [ProductReadModel.model_validate(p) for p in result.scalars().all()]

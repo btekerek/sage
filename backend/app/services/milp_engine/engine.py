@@ -43,10 +43,6 @@ def run_milp(
     budget: float,
     target_coverage_days: int,
 ) -> ReplenishmentResult:
-    """
-    Run the MILP solver over all candidate products.
-    Returns a ReplenishmentResult with suggestions ordered by urgency.
-    """
     if not products:
         return ReplenishmentResult(
             suggestions=[],
@@ -57,7 +53,6 @@ def run_milp(
             solver_status="no_candidates",
         )
 
-    # Filter out products with zero demand — can't compute coverage for them
     candidates = [p for p in products if p.daily_demand > Decimal("0")]
     if not candidates:
         return ReplenishmentResult(
@@ -93,38 +88,33 @@ def _solve(
     candidates: list[ProductReplenishmentInput],
     budget: float,
     target_days: int,
-) -> tuple[dict[str, int], str]:
-    """Run the full MILP problem. Returns (order_quantities, solver_status)."""
+) -> tuple[dict, str]:
     prob = pulp.LpProblem("replenishment", pulp.LpMinimize)
 
-    # Decision variables: x_i >= 0, integer
     x = {
-        p.product_id: pulp.LpVariable(f"x_{p.product_id}", lowBound=0, cat="Integer")
+        p.product_id: pulp.LpVariable(
+            f"x_{p.product_id}", lowBound=0, cat="Integer"
+        )
         for p in candidates
     }
 
-    # Objective: minimise total cost
     prob += pulp.lpSum(float(p.unit_cost) * x[p.product_id] for p in candidates)
 
-    # Budget constraint
     prob += (
-        pulp.lpSum(float(p.unit_cost) * x[p.product_id] for p in candidates) <= budget
+        pulp.lpSum(float(p.unit_cost) * x[p.product_id] for p in candidates)
+        <= budget
     )
 
-    # Coverage constraint: s_i + x_i >= d_i * (l_i + T)
     for p in candidates:
         required = float(p.daily_demand) * (p.lead_time_days + target_days)
         prob += p.current_stock + x[p.product_id] >= required
 
-    # MOQ constraint: if ordering, order at least min_order_quantity
-    # Modelled as: x_i >= m_i * y_i where y_i is binary "are we ordering?"
     y = {
         p.product_id: pulp.LpVariable(f"y_{p.product_id}", cat="Binary")
         for p in candidates
     }
     for p in candidates:
         prob += x[p.product_id] >= p.min_order_quantity * y[p.product_id]
-        # Big-M to link x and y: x_i <= M * y_i
         big_m = int(float(p.daily_demand) * (p.lead_time_days + target_days) * 10) + 1
         prob += x[p.product_id] <= big_m * y[p.product_id]
 
@@ -143,20 +133,12 @@ def _priority_heuristic(
     candidates: list[ProductReplenishmentInput],
     budget: float,
     target_days: int,
-) -> tuple[dict[str, int], str]:
-    """
-    Two-phase fallback heuristic when budget is too tight for full coverage.
-
-    Phase 1: rank by r_i = s_i / d_i (days of stock remaining, ascending)
-    Phase 2: solve MILP for growing candidate subsets until budget is exceeded
-    """
-    # Phase 1: rank by urgency
+) -> tuple[dict, str]:
     ranked = sorted(
         candidates,
         key=lambda p: float(p.current_stock) / float(p.daily_demand),
     )
 
-    # Phase 2: iteratively add products
     best_result: dict = {p.product_id: 0 for p in candidates}
     best_status = "Heuristic"
 
@@ -175,7 +157,6 @@ def _build_suggestions(
     candidates: list[ProductReplenishmentInput],
     order_quantities: dict,
 ) -> list[ReplenishmentSuggestion]:
-    """Convert solver output into ReplenishmentSuggestion objects."""
     suggestions = []
 
     for p in candidates:
@@ -209,7 +190,6 @@ def _build_suggestions(
             )
         )
 
-    # Sort by urgency: critical first, then by days remaining ascending
     suggestions.sort(
         key=lambda s: (s.priority != "critical", s.days_of_stock_remaining)
     )

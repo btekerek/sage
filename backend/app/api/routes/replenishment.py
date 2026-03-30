@@ -2,16 +2,16 @@
 Replenishment API route.
 
 GET /api/replenishment/suggestions
-    Reads current stock from inventory_layer_read, derives demand from
-    recent SaleEvents (falls back to a configurable default when no sales
-    history exists), runs the MILP solver, and returns ranked order suggestions.
-
 POST /api/replenishment/accept
-    Persists accepted suggestions as PurchaseOrderEvents.
 """
 
 from decimal import Decimal
-from uuid import UUID
+from uuid import UUID, uuid4
+
+from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
+from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db_session
 from app.core.settings import get_settings
@@ -24,49 +24,37 @@ from app.services.milp_engine import (
     ReplenishmentResult,
     run_milp,
 )
-from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
-from sqlalchemy import func, select, text
-from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/api/replenishment", tags=["replenishment"])
 
-# Fallback daily demand when no sales history exists
 _DEFAULT_DAILY_DEMAND = Decimal("5.0")
-
-
-# ── Suggestions endpoint ───────────────────────────────────────────────────
 
 
 @router.get("/suggestions", response_model=ReplenishmentResult)
 async def get_replenishment_suggestions(
-    budget: float = Query(
-        default=None, description="Override budget ceiling from settings"
-    ),
-    target_days: int = Query(default=None, description="Override target coverage days"),
+    budget: float = Query(default=None),
+    target_days: int = Query(default=None),
     session: AsyncSession = Depends(get_db_session),
 ) -> ReplenishmentResult:
-    """
-    Run the MILP replenishment optimiser and return ranked order suggestions.
-    """
     settings = get_settings()
     effective_budget = budget or settings.replenishment_budget
     effective_target = target_days or settings.replenishment_target_days
 
-    # 1. Aggregate stock per product from inventory_layer_read
-    stock_stmt = select(
-        InventoryLayerReadEntity.product_id,
-        func.sum(InventoryLayerReadEntity.quantity).label("total_stock"),
-    ).group_by(InventoryLayerReadEntity.product_id)
+    stock_stmt = (
+        select(
+            InventoryLayerReadEntity.product_id,
+            func.sum(InventoryLayerReadEntity.quantity).label("total_stock"),
+        )
+        .group_by(InventoryLayerReadEntity.product_id)
+    )
     stock_result = await session.execute(stock_stmt)
     stock_by_product = {
-        str(row.product_id): int(row.total_stock) for row in stock_result.all()
+        str(row.product_id): int(row.total_stock)
+        for row in stock_result.all()
     }
 
     if not stock_by_product:
-        from app.services.milp_engine.models import ReplenishmentResult as RR
-
-        return RR(
+        return ReplenishmentResult(
             suggestions=[],
             total_estimated_cost=Decimal("0.00"),
             budget_used=Decimal("0.00"),
@@ -75,26 +63,23 @@ async def get_replenishment_suggestions(
             solver_status="no_inventory_data",
         )
 
-    # 2. Get product details (name, current_price as unit_cost proxy)
     product_ids = list(stock_by_product.keys())
     products_stmt = select(ProductReadEntity).where(
         ProductReadEntity.id.in_(product_ids)
     )
     products_result = await session.execute(products_stmt)
-    products_by_id = {str(p.id): p for p in products_result.scalars().all()}
+    products_by_id = {
+        str(p.id): p for p in products_result.scalars().all()
+    }
 
-    # 3. Derive daily demand from SaleEvents (last 30 days)
     demand_by_product = await _get_daily_demand(session, product_ids)
 
-    # 4. Build MILP inputs
     milp_inputs: list[ProductReplenishmentInput] = []
     for product_id, stock in stock_by_product.items():
         product = products_by_id.get(product_id)
         if not product:
             continue
-
         daily_demand = demand_by_product.get(product_id, _DEFAULT_DAILY_DEMAND)
-
         milp_inputs.append(
             ProductReplenishmentInput(
                 product_id=UUID(product_id),
@@ -105,11 +90,7 @@ async def get_replenishment_suggestions(
             )
         )
 
-    # 5. Run solver
     return run_milp(milp_inputs, effective_budget, effective_target)
-
-
-# ── Accept endpoint ────────────────────────────────────────────────────────
 
 
 class AcceptedOrder(BaseModel):
@@ -132,21 +113,13 @@ async def accept_replenishment_orders(
     payload: AcceptReplenishmentRequest,
     session: AsyncSession = Depends(get_db_session),
 ) -> AcceptReplenishmentResponse:
-    """
-    Persist accepted replenishment orders as PurchaseOrderEvents.
-    """
-    import uuid
-
-    from app.infrastructure.repositories.event_store_repository import (
-        EventStoreRepository,
-    )
+    from app.infrastructure.repositories.event_store_repository import EventStoreRepository
 
     repo = EventStoreRepository(session)
-
     for order in payload.orders:
         await repo.append_event(
             aggregate_type="Replenishment",
-            aggregate_id=str(uuid.uuid4()),
+            aggregate_id=str(uuid4()),
             event_type="PurchaseOrderEvent",
             payload={
                 "product_id": str(order.product_id),
@@ -155,29 +128,16 @@ async def accept_replenishment_orders(
             },
             actor_id=str(payload.approved_by),
         )
-
     await session.commit()
-
-    return AcceptReplenishmentResponse(
-        status="accepted",
-        accepted_count=len(payload.orders),
-    )
-
-
-# ── Demand helper ──────────────────────────────────────────────────────────
+    return AcceptReplenishmentResponse(status="accepted", accepted_count=len(payload.orders))
 
 
 async def _get_daily_demand(
     session: AsyncSession,
     product_ids: list[str],
 ) -> dict[str, Decimal]:
-    """
-    Derive average daily demand per product from SaleEvents in the last 30 days.
-    Returns an empty dict if no sales history exists — caller uses default.
-    """
     try:
-        stmt = text(
-            """
+        stmt = text("""
             SELECT
                 line_item->>'product_id' AS product_id,
                 SUM((line_item->>'quantity')::int) / 30.0 AS daily_demand
@@ -187,8 +147,7 @@ async def _get_daily_demand(
               AND occurred_at_utc >= NOW() - INTERVAL '30 days'
               AND line_item->>'product_id' = ANY(:product_ids)
             GROUP BY line_item->>'product_id'
-        """
-        )
+        """)
         result = await session.execute(stmt, {"product_ids": product_ids})
         return {
             row.product_id: Decimal(str(row.daily_demand)).quantize(Decimal("0.01"))
