@@ -24,7 +24,7 @@ class Settings(BaseSettings):
 
     anthropic_api_key: Optional[str] = Field(None, alias="ANTHROPIC_API_KEY")
     ai_confidence_threshold: float = Field(
-        0.85,
+        0.65,
         alias="AI_CONFIDENCE_THRESHOLD",
         ge=0.0,
         le=1.0,

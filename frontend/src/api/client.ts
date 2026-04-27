@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { useAuthStore } from '../store/authStore'
 
 const client = axios.create({
   baseURL: 'http://localhost:8000',
@@ -7,11 +8,34 @@ const client = axios.create({
   },
 })
 
+// Attach JWT on every request
+client.interceptors.request.use((config) => {
+  const token = useAuthStore.getState().token
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
+// On 401, clear auth and redirect to login
+client.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      useAuthStore.getState().logout()
+      window.location.href = '/login'
+    }
+    return Promise.reject(error)
+  }
+)
+
 export interface Product {
   id: string
   name: string
   current_price: number
   category_id: string
+  category_name: string | null
+  current_stock: number   // live stock count from inventory_layer_read
 }
 
 export interface CartItem {
@@ -21,7 +45,7 @@ export interface CartItem {
 
 export const api = {
   getProducts: async (): Promise<Product[]> => {
-    const { data } = await client.get('/api/products')
+    const { data } = await client.get('/api/products/pos-catalog')
     return data
   },
 

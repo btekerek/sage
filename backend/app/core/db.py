@@ -13,15 +13,25 @@ _engine = None
 
 
 async def init_db():
-    """Initialize database engine at application startup."""
+    """Initialize database engine and ensure all tables exist at application startup."""
     global _engine
     settings = get_settings()
     _engine = create_async_engine(
         settings.database_url,
-        echo=False,  # Set to True for SQL logging during development
+        echo=False,
         pool_size=15,
         max_overflow=10,
+        pool_pre_ping=True,   # test connections before use so a DB restart doesn't break the pool
     )
+
+    # Create any tables that Alembic doesn't manage yet (read-side projections and users).
+    # These are derived/regenerable from the event log so create_all is safe.
+    # The event-store table (`events`) is managed by Alembic migrations instead.
+    from app.infrastructure.projectors.read_entities import ReadBase
+    from app.infrastructure.models.user import UserBase
+    async with _engine.begin() as conn:
+        await conn.run_sync(ReadBase.metadata.create_all)
+        await conn.run_sync(UserBase.metadata.create_all)
 
 
 async def close_db():

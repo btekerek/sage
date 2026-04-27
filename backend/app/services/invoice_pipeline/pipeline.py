@@ -8,12 +8,8 @@ Stage 3: Validation + review routing
 
 import logging
 from decimal import Decimal
-from io import BytesIO
 
-import pdfplumber
-from PIL import Image
-
-from .extractor import extract_with_claude
+from .extractor import extract_with_claude_vision
 from .models import ExtractedLineItem, InvoiceExtractionResult, InvoiceHeader
 
 logger = logging.getLogger(__name__)
@@ -29,15 +25,22 @@ def run_pipeline(
     confidence_threshold: float,
     ocr_engine_path: str | None = None,
 ) -> InvoiceExtractionResult:
-    raw_text = _extract_text(file_bytes, filename, ocr_engine_path)
-    if not raw_text.strip():
-        raise ValueError("Could not extract any text from the uploaded file.")
-
-    header, line_items = extract_with_claude(raw_text, api_key)
+    # Always use Claude Vision for extraction.
+    #
+    # Text-based extraction (pdfplumber → plain text → Claude) looked attractive
+    # but consistently fails on multi-column invoices: narrow column widths cause
+    # numbers to bleed across column boundaries in the extracted text, so Claude
+    # reads the right digits but in the wrong column (e.g. Menny=4 instead of 12).
+    # Claude Vision reads the rendered page image directly — column positions are
+    # visually unambiguous, making extraction reliable for both text-based and
+    # scanned PDFs as well as image uploads.
+    logger.info("Routing %s through Claude Vision", filename)
+    header, line_items = extract_with_claude_vision(file_bytes, api_key, filename=filename)
+    line_items = _drop_fee_lines(line_items)
     line_items = _validate_line_items(line_items)
     line_items = _route(line_items, confidence_threshold)
 
-    computed_total = sum(i.line_total for i in line_items)
+    computed_total = sum((i.line_total for i in line_items), Decimal("0"))
     footer_discrepancy = _check_footer(computed_total, header)
 
     flagged = [i for i in line_items if i.flags]
@@ -54,63 +57,41 @@ def run_pipeline(
         requires_review=len(flagged) > 0,
         auto_accepted_count=len(auto_accepted),
         flagged_count=len(flagged),
-        raw_text=raw_text,
+        raw_text="",
         computed_net_total=str(computed_total.quantize(Decimal("0.01"))),
         footer_discrepancy=footer_discrepancy,
     )
 
 
-def _extract_text(file_bytes: bytes, filename: str, ocr_path: str | None) -> str:
-    text = ""
-    lower = filename.lower()
-
-    if lower.endswith(".pdf"):
-        text = _extract_pdf(file_bytes)
-    elif lower.endswith((".png", ".jpg", ".jpeg", ".tiff", ".bmp")):
-        text = _ocr_image(file_bytes, ocr_path)
-
-    if len(text.strip()) < 80 and lower.endswith(".pdf"):
-        logger.info("pdfplumber yielded little text — falling back to OCR")
-        text = _ocr_pdf_pages(file_bytes, ocr_path)
-
-    return text
-
-
-def _extract_pdf(file_bytes: bytes) -> str:
-    parts: list[str] = []
-    with pdfplumber.open(BytesIO(file_bytes)) as pdf:
-        for page in pdf.pages:
-            page_text = page.extract_text() or ""
-            parts.append(page_text)
-    return "\n".join(parts)
+# Hungarian fee/surcharge keywords that appear on METRO and other supplier invoices
+# but are NOT physical goods — they should never enter inventory.
+_FEE_KEYWORDS = (
+    "visszaváltási",
+    "visszavaltas",
+    "visszaváltás",
+    "betétdíj",
+    "betétdij",
+    "packaging fee",
+    "deposit fee",
+    "díjtétel",
+    "dijtétel",
+)
 
 
-def _ocr_image(file_bytes: bytes, ocr_path: str | None) -> str:
-    try:
-        import pytesseract  # type: ignore[import-untyped]
-        if ocr_path:
-            pytesseract.pytesseract.tesseract_cmd = ocr_path
-        image = Image.open(BytesIO(file_bytes))
-        return pytesseract.image_to_string(image)
-    except Exception as exc:
-        logger.warning("OCR failed: %s", exc)
-        return ""
-
-
-def _ocr_pdf_pages(file_bytes: bytes, ocr_path: str | None) -> str:
-    try:
-        import pytesseract  # type: ignore[import-untyped]
-        from pdf2image import convert_from_bytes  # type: ignore[import-untyped]
-        if ocr_path:
-            pytesseract.pytesseract.tesseract_cmd = ocr_path
-        images = convert_from_bytes(file_bytes, dpi=200)
-        return "\n".join(pytesseract.image_to_string(img) for img in images)
-    except ImportError:
-        logger.warning("pdf2image not installed — OCR fallback unavailable")
-        return ""
-    except Exception as exc:
-        logger.warning("PDF OCR fallback failed: %s", exc)
-        return ""
+def _drop_fee_lines(items: list[ExtractedLineItem]) -> list[ExtractedLineItem]:
+    """
+    Remove non-product fee lines (e.g. bottle deposit, packaging surcharge)
+    before validation so they don't pollute the extracted line item list or
+    trigger false confidence flags.
+    """
+    kept = []
+    for item in items:
+        name_lower = item.product_name.lower()
+        if any(kw in name_lower for kw in _FEE_KEYWORDS):
+            logger.info("Dropping fee line: %r", item.product_name)
+            continue
+        kept.append(item)
+    return kept
 
 
 def _validate_line_items(items: list[ExtractedLineItem]) -> list[ExtractedLineItem]:
@@ -123,14 +104,23 @@ def _validate_line_items(items: list[ExtractedLineItem]) -> list[ExtractedLineIt
             item.flags.append("invalid_unit_price")
 
         if item.quantity > 0 and item.unit_price > Decimal("0"):
+            # Suppliers use two different pricing conventions:
+            #   A) Egységár is price-per-pack:  Nettó ár = Menny × Egységár
+            #   B) Egységár is price-per-unit:  Nettó ár = (Menny × Db/Csom) × Egységár
+            # We accept either — only flag when neither explains the total.
             pack = Decimal(str(item.packaging_size)) if item.packaging_size > 1 else Decimal("1")
-            expected = (item.unit_price * item.quantity * pack).quantize(Decimal("0.01"))
+            expected_per_pack = (item.unit_price * item.quantity).quantize(Decimal("0.01"))
+            expected_per_unit = (item.unit_price * item.quantity * pack).quantize(Decimal("0.01"))
+
             if item.line_total == Decimal("0"):
-                item.line_total = expected
+                # No line total extracted — derive it (prefer per-pack when pack=1)
+                item.line_total = expected_per_unit if pack > 1 else expected_per_pack
             else:
-                diff = abs(item.line_total - expected)
-                tolerance = expected * _LINE_TOTAL_TOLERANCE
-                if diff > tolerance:
+                diff_pack = abs(item.line_total - expected_per_pack)
+                diff_unit = abs(item.line_total - expected_per_unit)
+                tol_pack = expected_per_pack * _LINE_TOTAL_TOLERANCE
+                tol_unit = expected_per_unit * _LINE_TOTAL_TOLERANCE
+                if diff_pack > tol_pack and diff_unit > tol_unit:
                     item.flags.append("line_total_mismatch")
 
     return items

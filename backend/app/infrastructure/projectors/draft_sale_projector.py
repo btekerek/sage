@@ -10,7 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.events.base import BaseEvent
 from app.infrastructure.projectors.base import BaseProjector
-from app.infrastructure.projectors.read_entities import DraftSaleReadEntity
+from app.infrastructure.projectors.read_entities import (
+    DraftSaleReadEntity,
+    InventoryLayerReadEntity,
+)
 
 
 class DraftSaleProjector(BaseProjector):
@@ -156,12 +159,67 @@ class DraftSaleProjector(BaseProjector):
     async def _handle_sale_finalized(
         self, event: BaseEvent, session: AsyncSession
     ) -> None:
-        stmt = (
+        # Mark sale as finalized
+        await session.execute(
             update(DraftSaleReadEntity)
             .where(DraftSaleReadEntity.id == event.aggregate_id)
             .values(status="finalized", version=event.sequence_number)
         )
-        await session.execute(stmt)
+        # Deplete inventory using FIFO across cost layers
+        payload = event.to_dict().get("payload", {})
+        await self._deplete_inventory_fifo(payload.get("line_items", []), session)
+
+    async def _deplete_inventory_fifo(
+        self, line_items: list, session: AsyncSession
+    ) -> None:
+        """
+        For each sold item, deduct its quantity from inventory_layer_read
+        consuming the oldest layers first (FIFO).
+
+        If total stock is insufficient the newest layer is allowed to go
+        negative — the manager will see a red badge in the inventory view
+        and can investigate / correct the count.
+        """
+        for item in line_items:
+            product_id = str(item["product_id"])
+            qty_to_deduct = int(item["quantity"])
+
+            # Fetch layers oldest-first; include zero/negative so we don't skip them
+            result = await session.execute(
+                select(InventoryLayerReadEntity)
+                .where(InventoryLayerReadEntity.product_id == product_id)
+                .order_by(InventoryLayerReadEntity.created_at.asc())
+            )
+            layers = result.scalars().all()
+
+            if not layers:
+                # Product has no inventory record yet — nothing to deduct
+                continue
+
+            for idx, layer in enumerate(layers):
+                if qty_to_deduct <= 0:
+                    break
+
+                is_last = idx == len(layers) - 1
+                if is_last:
+                    # Last (or only) layer absorbs the remainder, even if negative
+                    await session.execute(
+                        update(InventoryLayerReadEntity)
+                        .where(InventoryLayerReadEntity.id == layer.id)
+                        .values(quantity=layer.quantity - qty_to_deduct)
+                    )
+                    qty_to_deduct = 0
+                else:
+                    # Take what's available from this layer before moving on
+                    available = max(0, layer.quantity)
+                    take = min(available, qty_to_deduct)
+                    if take > 0:
+                        await session.execute(
+                            update(InventoryLayerReadEntity)
+                            .where(InventoryLayerReadEntity.id == layer.id)
+                            .values(quantity=layer.quantity - take)
+                        )
+                        qty_to_deduct -= take
 
     async def _handle_sale_voided(
         self, event: BaseEvent, session: AsyncSession

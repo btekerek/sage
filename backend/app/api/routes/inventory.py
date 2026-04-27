@@ -65,4 +65,3 @@ async def get_inventory_layer(
         )
 
     return InventoryLayerReadModel.model_validate(entity)
-    return InventoryLayerReadModel.model_validate(entity)

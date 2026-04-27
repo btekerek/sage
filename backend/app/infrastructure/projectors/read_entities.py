@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import UUID, DateTime, Numeric, String, func
+from sqlalchemy import UUID, DateTime, Integer, Numeric, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -70,6 +70,29 @@ class InventoryLayerReadEntity(ReadBase):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     version: Mapped[int] = mapped_column(default=0)
+
+
+class InvoiceRecordEntity(ReadBase):
+    """
+    Persisted record of every approved supplier invoice.
+    Written by the /api/invoices/approve endpoint so managers can
+    browse invoice history without replaying the full event store.
+    """
+
+    __tablename__ = "invoice_record"
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    supplier_ref: Mapped[str] = mapped_column(String(255))
+    invoice_ref: Mapped[str] = mapped_column(String(255))
+    invoice_date: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    approved_by: Mapped[str] = mapped_column(String(100))
+    approved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    line_item_count: Mapped[int] = mapped_column(Integer, default=0)
+    net_total: Mapped[float] = mapped_column(Numeric(14, 2), default=0.0)
+    # Full JSON snapshot of line items as submitted (for audit / re-display)
+    line_items_json: Mapped[str] = mapped_column(Text, default="[]")
 
 
 class DraftSaleReadEntity(ReadBase):

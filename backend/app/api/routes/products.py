@@ -8,10 +8,14 @@ from app.domain.commands.product_commands import (
     ApplyPriceOverrideCommand,
     CreateProductCommand,
 )
-from app.infrastructure.projectors.read_entities import ProductReadEntity
+from app.infrastructure.projectors.read_entities import (
+    CategoryReadEntity,
+    InventoryLayerReadEntity,
+    ProductReadEntity,
+)
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/api/products", tags=["products"])
@@ -34,6 +38,75 @@ class ProductWriteResponse(BaseModel):
     aggregate_id: UUID
     status: str
 
+
+class POSProductModel(BaseModel):
+    """Lightweight product model for the POS screen — includes live stock count."""
+    id: str
+    name: str
+    current_price: Decimal
+    category_id: str
+    category_name: str | None
+    current_stock: int
+
+
+# ── Fixed routes (must come before /{product_id} to avoid UUID parse errors) ──
+
+@router.get("/pos-catalog", response_model=list[POSProductModel])
+async def get_pos_catalog(
+    session: AsyncSession = Depends(get_db_session),
+) -> list[POSProductModel]:
+    """
+    Returns all products with their current aggregated stock level and category name.
+    Used by the POS so it can enforce real stock limits and group by category.
+    Must be declared before /{product_id} or FastAPI will try to parse
+    the literal string 'pos-catalog' as a UUID and return 422.
+    """
+    stock_sq = (
+        select(
+            InventoryLayerReadEntity.product_id,
+            func.coalesce(func.sum(InventoryLayerReadEntity.quantity), 0).label("total_qty"),
+        )
+        .group_by(InventoryLayerReadEntity.product_id)
+        .subquery()
+    )
+    stmt = (
+        select(
+            ProductReadEntity.id,
+            ProductReadEntity.name,
+            ProductReadEntity.current_price,
+            ProductReadEntity.category_id,
+            CategoryReadEntity.name.label("category_name"),
+            func.coalesce(stock_sq.c.total_qty, 0).label("current_stock"),
+        )
+        .outerjoin(stock_sq, ProductReadEntity.id == stock_sq.c.product_id)
+        .outerjoin(CategoryReadEntity, ProductReadEntity.category_id == CategoryReadEntity.id)
+        .order_by(CategoryReadEntity.name, ProductReadEntity.name)
+    )
+    result = await session.execute(stmt)
+    rows = result.mappings().all()
+    return [
+        POSProductModel(
+            id=str(row["id"]),
+            name=row["name"],
+            current_price=Decimal(str(row["current_price"])),
+            category_id=str(row["category_id"]),
+            category_name=row["category_name"],
+            current_stock=int(row["current_stock"] or 0),
+        )
+        for row in rows
+    ]
+
+
+@router.get("", response_model=list[ProductReadModel])
+async def list_products(
+    session: AsyncSession = Depends(get_db_session),
+) -> list[ProductReadModel]:
+    stmt = select(ProductReadEntity)
+    result = await session.execute(stmt)
+    return [ProductReadModel.model_validate(p) for p in result.scalars().all()]
+
+
+# ── Parameterised routes (/{product_id} must come last) ───────────────────────
 
 @router.post(
     "", response_model=ProductWriteResponse, status_code=status.HTTP_201_CREATED
@@ -92,11 +165,3 @@ async def get_product(
         )
 
     return ProductReadModel.model_validate(entity)
-
-@router.get("", response_model=list[ProductReadModel])
-async def list_products(
-    session: AsyncSession = Depends(get_db_session),
-) -> list[ProductReadModel]:
-    stmt = select(ProductReadEntity)
-    result = await session.execute(stmt)
-    return [ProductReadModel.model_validate(p) for p in result.scalars().all()]

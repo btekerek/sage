@@ -8,11 +8,14 @@ class ExtractedLineItem(BaseModel):
     """A single line item extracted from a supplier invoice."""
 
     product_name: str
+    cikkszam: str = ""             # Article / SKU number for reliable PDF highlighting
     quantity: int
     unit: str
     unit_price: Decimal
     line_total: Decimal
     packaging_size: int = 1
+    vat_rate: float = 0.0          # ÁFA% e.g. 5.0, 27.0
+    brutto_line_total: Decimal = Decimal("0")   # Bruttó ár (VAT included)
     confidence: float
     flags: list[str]
 

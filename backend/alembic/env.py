@@ -6,6 +6,8 @@ from logging.config import fileConfig
 
 from alembic import context  # type: ignore
 from app.infrastructure.event_store.models import Base  # type: ignore
+from app.infrastructure.projectors.read_entities import ReadBase  # type: ignore
+from app.infrastructure.models.user import UserBase  # type: ignore
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
@@ -14,7 +16,7 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-target_metadata = Base.metadata
+target_metadata = [Base.metadata, ReadBase.metadata, UserBase.metadata]
 
 
 def run_migrations_offline() -> None:
