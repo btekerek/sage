@@ -57,13 +57,16 @@ _ALLOWED_CONTENT_TYPES = {
 @router.post("/process", response_model=InvoiceExtractionResult)
 async def process_invoice(
     file: UploadFile,
+    session: AsyncSession = Depends(get_db_session),
 ) -> InvoiceExtractionResult:
     """
     Stage 1–3: upload → extract text → Claude → validate → route.
     Returns the extraction result for manager review.
     No database writes happen here.
     """
+    from app.api.routes.config import get_runtime_config
     settings = get_settings()
+    live_cfg = await get_runtime_config(session)
 
     if not settings.anthropic_api_key:
         raise HTTPException(
@@ -90,7 +93,7 @@ async def process_invoice(
             file_bytes=file_bytes,
             filename=file.filename or "invoice",
             api_key=settings.anthropic_api_key,
-            confidence_threshold=settings.ai_confidence_threshold,
+            confidence_threshold=float(live_cfg["ai_confidence_threshold"]),
             ocr_engine_path=settings.ocr_engine_path,
         )
     except ValueError as exc:

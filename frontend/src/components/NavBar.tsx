@@ -49,6 +49,12 @@ export default function NavBar() {
             <button onClick={() => navigate('/audit')} className={navClass('/audit')}>
               Audit Trail
             </button>
+            <button onClick={() => navigate('/replay')} className={navClass('/replay')}>
+              Replay
+            </button>
+            <button onClick={() => navigate('/settings')} className={navClass('/settings')}>
+              Settings
+            </button>
           </>
         )}
         <button onClick={() => navigate('/pos')} className={navClass('/pos')}>

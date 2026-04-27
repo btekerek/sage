@@ -6,6 +6,8 @@ import InventoryPage from './pages/InventoryPage'
 import InvoicesPage from './pages/InvoicesPage'
 import LoginPage from './pages/LoginPage'
 import POSPage from './pages/POSPage'
+import ReplayPage from './pages/ReplayPage'
+import SettingsPage from './pages/SettingsPage'
 import AppLayout from './components/AppLayout'
 import { UserRole, useAuthStore } from './store/authStore'
 
@@ -70,8 +72,16 @@ export default function App() {
           element={<ProtectedRoute element={<AppLayout><AuditTrailPage /></AppLayout>} minRole="manager" />}
         />
         <Route
+          path="/replay"
+          element={<ProtectedRoute element={<AppLayout><ReplayPage /></AppLayout>} minRole="manager" />}
+        />
+        <Route
           path="/invoices"
           element={<ProtectedRoute element={<AppLayout><InvoicesPage /></AppLayout>} minRole="manager" />}
+        />
+        <Route
+          path="/settings"
+          element={<ProtectedRoute element={<AppLayout><SettingsPage /></AppLayout>} minRole="manager" />}
         />
 
         {/* Admin only */}

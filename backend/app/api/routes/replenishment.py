@@ -14,7 +14,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db_session
-from app.core.settings import get_settings
+from app.api.routes.config import get_runtime_config
 from app.infrastructure.projectors.read_entities import (
     InventoryLayerReadEntity,
     ProductReadEntity,
@@ -36,9 +36,9 @@ async def get_replenishment_suggestions(
     target_days: int = Query(default=None),
     session: AsyncSession = Depends(get_db_session),
 ) -> ReplenishmentResult:
-    settings = get_settings()
-    effective_budget = budget or settings.replenishment_budget
-    effective_target = target_days or settings.replenishment_target_days
+    live_cfg = await get_runtime_config(session)
+    effective_budget = budget or float(live_cfg["replenishment_budget"])
+    effective_target = target_days or int(live_cfg["replenishment_target_days"])
 
     stock_stmt = (
         select(

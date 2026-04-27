@@ -95,6 +95,23 @@ class InvoiceRecordEntity(ReadBase):
     line_items_json: Mapped[str] = mapped_column(Text, default="[]")
 
 
+class SystemConfigEntity(ReadBase):
+    """
+    Runtime-editable configuration overrides.
+    Each row is one key → value pair. Missing keys fall back to env defaults.
+    Every write is also appended to the event store as a SystemConfigEvent.
+    """
+
+    __tablename__ = "system_config"
+
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[str] = mapped_column(String(500))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    updated_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+
 class DraftSaleReadEntity(ReadBase):
     """Denormalized DraftSale aggregate read model."""
 

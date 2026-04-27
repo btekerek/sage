@@ -37,14 +37,32 @@ def run_pipeline(
     logger.info("Routing %s through Claude Vision", filename)
     header, line_items = extract_with_claude_vision(file_bytes, api_key, filename=filename)
     line_items = _drop_fee_lines(line_items)
-    line_items = _validate_line_items(line_items)
-    line_items = _route(line_items, confidence_threshold)
+
+    document_warning: str | None = None
+
+    if header.document_type == "delivery_note":
+        # Delivery notes have quantities but no prices — mark every item so the
+        # UI can warn the user and skip costing validation entirely.
+        document_warning = (
+            "This appears to be a delivery note (szállítólevél), not a price invoice. "
+            "Quantities have been extracted but no prices are available. "
+            "This document cannot be approved for inventory costing."
+        )
+        for item in line_items:
+            if "delivery_note_no_price" not in item.flags:
+                item.flags.append("delivery_note_no_price")
+        # Skip numeric validation — it would all fail with zero prices
+        flagged = line_items
+        auto_accepted: list = []
+    else:
+        line_items = _validate_line_items(line_items)
+        line_items = _route(line_items, confidence_threshold)
+        flagged = [i for i in line_items if i.flags]
+        auto_accepted = [i for i in line_items if not i.flags]
 
     computed_total = sum((i.line_total for i in line_items), Decimal("0"))
     footer_discrepancy = _check_footer(computed_total, header)
 
-    flagged = [i for i in line_items if i.flags]
-    auto_accepted = [i for i in line_items if not i.flags]
     overall_confidence = (
         sum(i.confidence for i in line_items) / len(line_items)
         if line_items else 0.0
@@ -60,17 +78,14 @@ def run_pipeline(
         raw_text="",
         computed_net_total=str(computed_total.quantize(Decimal("0.01"))),
         footer_discrepancy=footer_discrepancy,
+        document_warning=document_warning,
     )
 
 
-# Hungarian fee/surcharge keywords that appear on METRO and other supplier invoices
-# but are NOT physical goods — they should never enter inventory.
+# Line types that are purely administrative and carry no physical goods.
+# "visszaváltási díj" (bottle deposit) IS a real cost and stays in — it gets
+# booked as a product line so it appears in inventory/costing.
 _FEE_KEYWORDS = (
-    "visszaváltási",
-    "visszavaltas",
-    "visszaváltás",
-    "betétdíj",
-    "betétdij",
     "packaging fee",
     "deposit fee",
     "díjtétel",

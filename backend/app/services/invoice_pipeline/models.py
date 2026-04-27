@@ -18,6 +18,8 @@ class ExtractedLineItem(BaseModel):
     brutto_line_total: Decimal = Decimal("0")   # Bruttó ár (VAT included)
     confidence: float
     flags: list[str]
+    source_page: int = 1           # PDF page number this item was found on (1-based)
+    y_fraction: float = 0.5        # Vertical position on page: 0.0 = top, 1.0 = bottom
 
 
 class InvoiceHeader(BaseModel):
@@ -28,6 +30,7 @@ class InvoiceHeader(BaseModel):
     invoice_date: str | None = None
     footer_total: Decimal | None = None
     footer_net_total: Decimal | None = None
+    document_type: str = "invoice"   # "invoice" | "delivery_note"
 
 
 class InvoiceExtractionResult(BaseModel):
@@ -42,3 +45,4 @@ class InvoiceExtractionResult(BaseModel):
     raw_text: str
     computed_net_total: str = "0.00"
     footer_discrepancy: str | None = None
+    document_warning: str | None = None   # Human-readable warning for non-invoice docs

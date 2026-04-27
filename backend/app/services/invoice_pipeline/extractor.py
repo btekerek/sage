@@ -223,11 +223,17 @@ def _to_decimal(value: object) -> Decimal | None:
 # ── Vision-based extraction (scanned PDFs / images) ────────────────────────────
 
 _VISION_PROMPT = """
-You are looking at a scanned supplier invoice or receipt image.
-Extract all line items and return ONLY valid JSON — no explanation, no markdown, no code fences.
+You are looking at a scanned supplier document — it may be a PRICE INVOICE or a DELIVERY NOTE.
+
+STEP 1 — identify the document type:
+- PRICE INVOICE: has unit prices (Egységár / Nettó egységár) and line totals (Nettó ár) printed per item.
+- DELIVERY NOTE (Szállítólevél / Szállítási bizonylat / CMR): has product names and quantities but NO prices per line. Often titled "SZÁLLÍTÓLEVÉL", "SZÁLLÍTÁSI BIZONYLAT", or "DELIVERY NOTE".
+
+Return ONLY valid JSON — no explanation, no markdown, no code fences.
 
 Use exactly this structure:
 {
+  "document_type": "invoice" or "delivery_note",
   "supplier_name": "string or null",
   "invoice_ref": "string or null",
   "invoice_date": "string or null",
@@ -237,8 +243,10 @@ Use exactly this structure:
     {
       "product_name": "string",
       "cikkszam": "string or empty string",
+      "page": integer (1-based page number where this item appears),
+      "y_fraction": float (vertical position of this row on its page: 0.0 = very top, 1.0 = very bottom),
       "quantity": integer,
-      "unit": "string (e.g. DB, kg, pcs)",
+      "unit": "string (e.g. DB, kg, pcs, GHE, KA)",
       "unit_price": number,
       "line_total": number,
       "packaging_size": integer,
@@ -250,7 +258,10 @@ Use exactly this structure:
 }
 
 Rules for reading the image:
-- cikkszam = the article/SKU number printed at the far left of each line (e.g. "0436128", "0384280"). Copy it exactly as printed. Leave empty string "" if not present (e.g. retail receipts).
+- CRITICAL: Copy ALL product names EXACTLY as printed on the document — do NOT translate, paraphrase, or anglicise Hungarian words. "VISSZAVÁLTÁSI DÍJ" must appear as "VISSZAVÁLTÁSI DÍJ", not as "Bottle Deposit Fee" or any other translation. Preserve accents, capitalisation, and spacing exactly.
+- document_type: set "delivery_note" when the document is titled Szállítólevél / Szállítási bizonylat / Delivery Note OR when no price column is present. Otherwise "invoice".
+- IF document_type is "delivery_note": set unit_price=0, line_total=0, vat_rate=0, brutto_line_total=0, footer_total=null, footer_net_total=null for every item. Do NOT invent prices. Only extract product_name, cikkszam, quantity, unit, and packaging_size.
+- cikkszam = the article/SKU number printed at the far left of each line (e.g. "0436128", "0384280"). Copy it exactly as printed. Leave "" if not present.
 - footer_total is the GROSS/BRUTTO total (with VAT). footer_net_total is NET/NETTO (before VAT).
 - If only one total is visible use footer_net_total and set footer_total to null.
 - For RETAIL RECEIPTS (e.g. SPAR, Tesco, Lidl) the line format is often:
@@ -269,10 +280,13 @@ Rules for reading the image:
     1.0 = value is explicitly printed and clearly legible in the image
     0.9 = value is printed but partially obscured or requires minor reading
     0.7 = value was calculated/inferred (e.g. line_total derived from qty × price)
+    0.5 = delivery_note item — quantity known but prices absent
     0.4 = value is uncertain or ambiguous
     0.3 = field missing or illegible, using 0
 - A line where all values are cleanly printed should have confidence 1.0.
 - quantity must be an integer.
+- page = the 1-based page number in the document where this line item physically appears. If all items are on page 1, set page=1 for all. Use the correct page number when items span multiple pages.
+- y_fraction = where on that page the row sits, as a fraction: 0.0 = very top edge of the page, 1.0 = very bottom edge. A row one-third down the page = 0.33. Be as precise as you can by estimating from the row's visual position relative to the full page height.
 """.strip()
 
 
@@ -355,12 +369,17 @@ def extract_with_claude_vision(
         logger.warning("Vision extractor returned unparseable JSON")
         return InvoiceHeader(), []
 
+    doc_type = data.get("document_type", "invoice")
+    if doc_type not in ("invoice", "delivery_note"):
+        doc_type = "invoice"
+
     header = InvoiceHeader(
         supplier_name=data.get("supplier_name"),
         invoice_ref=data.get("invoice_ref"),
         invoice_date=data.get("invoice_date"),
         footer_total=_to_decimal(data.get("footer_total")),
         footer_net_total=_to_decimal(data.get("footer_net_total")),
+        document_type=doc_type,
     )
 
     line_items: list[ExtractedLineItem] = []
@@ -371,6 +390,18 @@ def extract_with_claude_vision(
         # Fall back to calculating brutto if not provided
         if not brutto_raw or brutto_raw == Decimal("0"):
             brutto_raw = (net_total * Decimal(str(1 + vat_rate / 100))).quantize(Decimal("0.01"))
+        raw_page = raw_item.get("page", 1)
+        try:
+            source_page = max(1, int(raw_page))
+        except (TypeError, ValueError):
+            source_page = 1
+
+        raw_y = raw_item.get("y_fraction", 0.5)
+        try:
+            y_fraction = max(0.0, min(1.0, float(raw_y)))
+        except (TypeError, ValueError):
+            y_fraction = 0.5
+
         line_items.append(
             ExtractedLineItem(
                 product_name=str(raw_item.get("product_name", "Unknown")),
@@ -384,6 +415,8 @@ def extract_with_claude_vision(
                 brutto_line_total=brutto_raw,
                 confidence=float(raw_item.get("confidence", 0.5)),
                 flags=[],
+                source_page=source_page,
+                y_fraction=y_fraction,
             )
         )
 

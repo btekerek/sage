@@ -404,59 +404,74 @@ export default function DashboardPage() {
     // For image invoices PDF.js has no document — just mark the row selected
     if (!pdfDocRef.current) return
 
-    // Prefer cikkszam (article number) — it's unique and printed verbatim.
-    // Fall back to product name keywords when cikkszam is absent (retail receipts).
+    // ── Primary: use Claude's y_fraction to highlight directly ─────────────
+    // Claude reported where on the page this row sits (0.0 = top, 1.0 = bottom)
+    // while it was already looking at the image — no text layer needed.
+    const targetPage: number = item.source_page ?? 1
+
+    // Only use y_fraction when the API actually returned it (not the 0.5 default
+    // for items processed before this field existed).
+    if (item.y_fraction != null) {
+      const yFraction = item.y_fraction as number
+      const doc = pdfDocRef.current
+      const page = await doc.getPage(targetPage)
+      // At scale:1, viewport.height is the page height in PDF points (no viewBox needed)
+      const baseVp = page.getViewport({ scale: 1 })
+      const pageHeightPt = baseVp.height
+      // PDF Y=0 is at the bottom; y_fraction 0=top → pdfY = pageHeightPt
+      const rowHeightPt = Math.max(pageHeightPt * 0.03, 18)   // at least 18pt tall
+      const pdfY = pageHeightPt * (1 - yFraction) - rowHeightPt / 2
+
+      setPdfPage(targetPage)
+      setPdfHighlight({ page: targetPage, y: pdfY, h: rowHeightPt * 2 })
+      return
+    }
+
+    // ── Fallback: text-layer search (for re-processed PDFs without y_fraction) ──
     const cikkszam = (item.cikkszam || '').trim()
     const keywords = cikkszam
-      ? []  // will use cikkszam search
+      ? []
       : (item.product_name || '')
           .split(/\s+/)
           .map((w: string) => w.toLowerCase().trim())
           .filter((w: string) => w.length > 3)
 
-    if (!cikkszam && keywords.length === 0) return
-
     const doc = pdfDocRef.current
+    setPdfPage(targetPage)
+
     for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
       const page = await doc.getPage(pageNum)
       const content = await page.getTextContent()
-
-      // Group text items into lines by Y position
-      const lines: { y: number; h: number; text: string }[] = []
+      const lines: { y: number; h: number; text: string; compact: string }[] = []
       for (const textItem of content.items as any[]) {
         if (!('str' in textItem) || !textItem.str.trim()) continue
         const y = textItem.transform[5] as number
         const h = (textItem.height as number) || Math.abs(textItem.transform[3] as number) || 10
-        const existing = lines.find(l => Math.abs(l.y - y) < 4)
+        const str = textItem.str.toLowerCase()
+        const existing = lines.find(l => Math.abs(l.y - y) < 8)
         if (existing) {
-          existing.text += ' ' + textItem.str.toLowerCase()
+          existing.text += ' ' + str
+          existing.compact += str.replace(/\s+/g, '')
           existing.h = Math.max(existing.h, h)
         } else {
-          lines.push({ y, h, text: textItem.str.toLowerCase() })
+          lines.push({ y, h, text: str, compact: str.replace(/\s+/g, '') })
         }
       }
-
+      if (lines.length === 0) continue
       let bestLine: { y: number; h: number } | null = null
-
       if (cikkszam) {
-        // Exact cikkszam match — find the first line containing it
-        bestLine = lines.find(l => l.text.includes(cikkszam.toLowerCase())) ?? null
-      } else {
-        // Keyword scoring fallback for invoices without article numbers
+        const needle = cikkszam.toLowerCase().replace(/\s+/g, '')
+        bestLine = lines.find(l => l.compact.includes(needle) || l.text.includes(needle)) ?? null
+      } else if (keywords.length > 0) {
         let bestScore = 0
         for (const line of lines) {
-          const exact = keywords.filter((kw: string) => line.text.includes(kw)).length
-          const partial = keywords.filter((kw: string) =>
-            kw.length >= 5 && line.text.includes(kw.slice(0, 5))
-          ).length
+          const haystack = line.text + ' ' + line.compact
+          const exact = keywords.filter((kw: string) => haystack.includes(kw)).length
+          const partial = keywords.filter((kw: string) => kw.length >= 5 && haystack.includes(kw.slice(0, 5))).length
           const score = exact * 2 + partial
-          if (score > 0 && score > bestScore) {
-            bestScore = score
-            bestLine = line
-          }
+          if (score > 0 && score > bestScore) { bestScore = score; bestLine = line }
         }
       }
-
       if (bestLine) {
         setPdfPage(pageNum)
         setPdfHighlight({ page: pageNum, y: bestLine.y, h: Math.max(bestLine.h, 12) })
@@ -753,19 +768,25 @@ export default function DashboardPage() {
                 <span className="text-gray-500">
                   Confidence: <strong>{(invoiceResult.overall_confidence * 100).toFixed(0)}%</strong>
                 </span>
-                <span className={invoiceResult.requires_review ? 'text-yellow-600 font-medium' : 'text-green-600 font-medium'}>
-                  {invoiceResult.requires_review
-                    ? `⚠ ${invoiceResult.flagged_count} item(s) need review`
-                    : '✓ All items auto-accepted'}
-                </span>
-                {invoiceResult.footer_discrepancy ? (
-                  <span className="text-red-600 font-medium">⚠ Total mismatch: {invoiceResult.footer_discrepancy}</span>
+                {invoiceResult.document_warning ? (
+                  <span className="text-orange-600 font-medium">⚠ {invoiceResult.document_warning}</span>
                 ) : (
-                  <span className="text-green-600">✓ Net total {Number(invoiceResult.computed_net_total).toLocaleString('hu-HU')} matches invoice</span>
+                  <>
+                    <span className={invoiceResult.requires_review ? 'text-yellow-600 font-medium' : 'text-green-600 font-medium'}>
+                      {invoiceResult.requires_review
+                        ? `⚠ ${invoiceResult.flagged_count} item(s) need review`
+                        : '✓ All items auto-accepted'}
+                    </span>
+                    {invoiceResult.footer_discrepancy ? (
+                      <span className="text-red-600 font-medium">⚠ Total mismatch: {invoiceResult.footer_discrepancy}</span>
+                    ) : (
+                      <span className="text-green-600">✓ Net total {Number(invoiceResult.computed_net_total).toLocaleString('hu-HU')} matches invoice</span>
+                    )}
+                  </>
                 )}
                 {highlightedRow !== null && (
                   <span className="text-blue-600 text-xs">
-                    {pdfHighlight ? '📍 Row highlighted on PDF' : '⚠ Row not found in PDF text'}
+                    {pdfHighlight ? '📍 Row highlighted on PDF' : '📄 Navigated to page'}
                     {' '}— click row again to deselect
                   </span>
                 )}
@@ -1125,13 +1146,19 @@ export default function DashboardPage() {
                       {approveStatus === 'error' && (
                         <span className="text-red-600 text-sm">Approval failed</span>
                       )}
-                      <button
-                        onClick={handleApproveInvoice}
-                        disabled={approveStatus === 'loading' || approveStatus === 'success'}
-                        className="bg-green-600 text-white px-6 py-2 rounded font-medium hover:bg-green-700 disabled:opacity-50"
-                      >
-                        {approveStatus === 'loading' ? 'Approving...' : approveStatus === 'success' ? 'Approved ✓' : 'Approve Invoice'}
-                      </button>
+                      {invoiceResult.document_warning ? (
+                        <span className="text-orange-600 text-sm font-medium">
+                          Delivery notes cannot be approved
+                        </span>
+                      ) : (
+                        <button
+                          onClick={handleApproveInvoice}
+                          disabled={approveStatus === 'loading' || approveStatus === 'success'}
+                          className="bg-green-600 text-white px-6 py-2 rounded font-medium hover:bg-green-700 disabled:opacity-50"
+                        >
+                          {approveStatus === 'loading' ? 'Approving...' : approveStatus === 'success' ? 'Approved ✓' : 'Approve Invoice'}
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
