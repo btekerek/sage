@@ -32,20 +32,23 @@ class InventoryLayerProjector(BaseProjector):
         self, event: BaseEvent, session: AsyncSession
     ) -> None:
         payload = event.to_dict().get("payload", {})
+        qty = int(payload.get("quantity_received", 0))
         stmt = (
             pg_insert(InventoryLayerReadEntity)
             .values(
                 id=event.aggregate_id,
                 product_id=UUID(payload.get("product_id")),
                 layer_name=payload.get("supplier_ref", "layer"),
-                quantity=int(payload.get("quantity_received", 0)),
+                quantity=qty,
+                last_intake_at=event.occurred_at,
                 created_at=event.occurred_at,
                 version=event.sequence_number,
             )
             .on_conflict_do_update(
                 index_elements=["id"],
                 set_={
-                    "quantity": int(payload.get("quantity_received", 0)),
+                    "quantity": qty,
+                    "last_intake_at": event.occurred_at,
                     "version": event.sequence_number,
                 },
             )

@@ -72,7 +72,13 @@ export default function AdminPage() {
       setShowCreate(false)
       await fetchUsers()
     } catch (err: any) {
-      setCreateError(err.response?.data?.detail ?? 'Failed to create user')
+      const detail = err.response?.data?.detail
+      const msg = Array.isArray(detail)
+        ? detail.map((e: any) => e.msg ?? String(e)).join(' · ')
+        : typeof detail === 'string'
+          ? detail
+          : 'Failed to create user'
+      setCreateError(msg)
     } finally {
       setCreating(false)
     }
@@ -94,7 +100,11 @@ export default function AdminPage() {
       setEditingId(null)
       await fetchUsers()
     } catch (err: any) {
-      alert(err.response?.data?.detail ?? 'Failed to save')
+      const detail = err.response?.data?.detail
+      const msg = Array.isArray(detail)
+        ? detail.map((e: any) => e.msg ?? String(e)).join(' · ')
+        : typeof detail === 'string' ? detail : 'Failed to save'
+      alert(msg)
     } finally {
       setSaving(false)
     }

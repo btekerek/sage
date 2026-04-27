@@ -2,8 +2,10 @@ import { useEffect, useMemo, useState } from 'react'
 import { api, Product, CartItem } from '../api/client'
 import client from '../api/client'
 import { v4 as uuidv4 } from 'uuid'
+import { useAuthStore } from '../store/authStore'
 
 export default function POSPage() {
+  const { user } = useAuthStore()
   const [products, setProducts] = useState<Product[]>([])
   const [cart, setCart] = useState<CartItem[]>([])
   const [saleId, setSaleId] = useState<string | null>(null)
@@ -20,7 +22,10 @@ export default function POSPage() {
     async function init() {
       try {
         await loadProducts()
-        const sale = await api.createDraftSale(uuidv4(), uuidv4())
+        // Read auth store imperatively so we always get the hydrated value,
+        // even if the Zustand persist rehydration races with this effect.
+        const operatorId = useAuthStore.getState().user?.id ?? uuidv4()
+        const sale = await api.createDraftSale(operatorId, uuidv4())
         setSaleId(sale.aggregate_id)
       } catch {
         showStatus('Failed to connect to backend', 'error')
@@ -38,7 +43,8 @@ export default function POSPage() {
 
   async function startNewSale() {
     try {
-      const sale = await api.createDraftSale(uuidv4(), uuidv4())
+      const operatorId = useAuthStore.getState().user?.id ?? uuidv4()
+      const sale = await api.createDraftSale(operatorId, uuidv4())
       setSaleId(sale.aggregate_id)
       setCart([])
       setStatus('')
@@ -230,16 +236,15 @@ const existing = cart.find(i => i.product.id === product.id)
                     <p className="text-blue-600 font-bold mt-1">
                       {Number(product.current_price).toLocaleString('hu-HU')} Ft
                     </p>
-                    {outOfStock && (
-                      <span className="absolute top-2 right-2 text-xs bg-gray-200 text-gray-500 px-1.5 py-0.5 rounded z-20">
-                        Out of stock
-                      </span>
-                    )}
-                    {lowStock && (
-                      <span className="absolute top-2 right-2 text-xs bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded">
-                        {remaining} left
-                      </span>
-                    )}
+                    <span className={`absolute top-2 right-2 text-xs px-1.5 py-0.5 rounded z-20 ${
+                      outOfStock
+                        ? 'bg-gray-200 text-gray-500'
+                        : lowStock
+                          ? 'bg-yellow-100 text-yellow-700 font-medium'
+                          : 'bg-gray-100 text-gray-400'
+                    }`}>
+                      {outOfStock ? 'Out of stock' : `${remaining} pcs`}
+                    </span>
                     {inCart > 0 && (
                       <span className="absolute bottom-2 right-2 text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full font-bold">
                         ×{inCart}

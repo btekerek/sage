@@ -162,7 +162,7 @@ export default function AuditTrailPage() {
           <table className="w-full text-sm">
             <thead className="bg-gray-50 border-b">
               <tr>
-                <th className="text-left px-4 py-3 font-semibold text-gray-600 w-8">#</th>
+                <th className="text-left px-4 py-3 font-semibold text-gray-600 w-8 text-xs" title="Per-aggregate sequence number">Seq</th>
                 <th className="text-left px-4 py-3 font-semibold text-gray-600">Event type</th>
                 <th className="text-left px-4 py-3 font-semibold text-gray-600">Aggregate</th>
                 <th className="text-left px-4 py-3 font-semibold text-gray-600 font-mono">Aggregate ID</th>

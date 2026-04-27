@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, require_manager_or_above
@@ -41,6 +41,8 @@ class InventorySummaryItem(BaseModel):
     category_name: str | None
     base_price: str
     current_price: str
+    avg_unit_cost: str | None   # weighted avg purchase cost from intake events
+    margin: float | None        # (selling - cost) / selling
     current_stock: int
     stock_value: str
     last_intake_at: datetime | None
@@ -120,18 +122,48 @@ async def get_inventory_summary(
     result = await session.execute(stmt)
     rows = result.mappings().all()
 
+    # Weighted-average purchase cost per product from intake events
+    cost_result = await session.execute(text("""
+        SELECT
+            payload->>'product_id'                                          AS product_id,
+            SUM((payload->>'quantity_received')::int
+                * (payload->>'unit_cost')::numeric)
+            / NULLIF(SUM((payload->>'quantity_received')::int), 0)          AS avg_cost
+        FROM events
+        WHERE event_type = 'InventoryLayerCreatedEvent'
+        GROUP BY payload->>'product_id'
+    """))
+    avg_cost_by_product: dict[str, Decimal] = {
+        row.product_id: Decimal(str(row.avg_cost))
+        for row in cost_result.all()
+        if row.avg_cost is not None
+    }
+
     items: list[InventorySummaryItem] = []
     for row in rows:
         stock = int(row["current_stock"] or 0)
         price = Decimal(str(row["current_price"]))
+        pid = str(row["id"])
+
+        avg_cost = avg_cost_by_product.get(pid)
+        # Fallback: if no intake events, use base_price as cost basis
+        if avg_cost is None:
+            avg_cost = Decimal(str(row["base_price"]))
+
+        margin: float | None = None
+        if avg_cost is not None and avg_cost > Decimal("0") and price > Decimal("0"):
+            margin = round(float((price - avg_cost) / price), 4)
+
         items.append(
             InventorySummaryItem(
-                product_id=str(row["id"]),
+                product_id=pid,
                 product_name=row["name"],
                 category_id=str(row["category_id"]),
                 category_name=row["category_name"],
                 base_price=str(Decimal(str(row["base_price"])).quantize(Decimal("0.01"))),
                 current_price=str(price.quantize(Decimal("0.01"))),
+                avg_unit_cost=str(avg_cost.quantize(Decimal("0.01"))) if avg_cost else None,
+                margin=margin,
                 current_stock=stock,
                 stock_value=str((price * stock).quantize(Decimal("0.01"))),
                 last_intake_at=row["last_intake"],

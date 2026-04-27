@@ -10,6 +10,7 @@ Configurable keys:
   replenishment_target_days     int    > 0
   costing_strategy              FIFO | WAC
   ai_confidence_threshold       float  0.0 – 1.0
+  margin_target                 float  0.0 – 0.99
 """
 
 import logging
@@ -25,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_db_session
 from app.core.settings import get_settings
 from app.infrastructure.event_store.models import StoredEvent
-from app.infrastructure.projectors.read_entities import SystemConfigEntity
+from app.infrastructure.projectors.read_entities import ProductReadEntity, SystemConfigEntity
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ _ALLOWED_KEYS = {
     "replenishment_target_days",
     "costing_strategy",
     "ai_confidence_threshold",
+    "margin_target",
 }
 
 
@@ -47,6 +49,7 @@ class SystemConfigResponse(BaseModel):
     replenishment_target_days: int
     costing_strategy: str
     ai_confidence_threshold: float
+    margin_target: float
     # metadata
     overrides: dict[str, str]   # which keys are overridden in DB (vs env default)
 
@@ -56,6 +59,7 @@ class PatchConfigRequest(BaseModel):
     replenishment_target_days: int | None = Field(None, gt=0)
     costing_strategy: str | None = None
     ai_confidence_threshold: float | None = Field(None, ge=0.0, le=1.0)
+    margin_target: float | None = Field(None, ge=0.0, lt=1.0)
     updated_by: str = "system"
 
 
@@ -72,6 +76,7 @@ async def get_runtime_config(session: AsyncSession) -> dict:
         "replenishment_target_days": env.replenishment_target_days,
         "costing_strategy": env.costing_strategy,
         "ai_confidence_threshold": env.ai_confidence_threshold,
+        "margin_target": env.margin_target,
     }
 
     result = await session.execute(select(SystemConfigEntity))
@@ -83,7 +88,7 @@ async def get_runtime_config(session: AsyncSession) -> dict:
         if key not in defaults:
             continue
         try:
-            if key in ("replenishment_budget", "ai_confidence_threshold"):
+            if key in ("replenishment_budget", "ai_confidence_threshold", "margin_target"):
                 merged[key] = float(raw_val)
             elif key == "replenishment_target_days":
                 merged[key] = int(raw_val)
@@ -109,6 +114,7 @@ async def get_config(
         replenishment_target_days=int(cfg["replenishment_target_days"]),
         costing_strategy=str(cfg["costing_strategy"]),
         ai_confidence_threshold=float(cfg["ai_confidence_threshold"]),
+        margin_target=float(cfg["margin_target"]),
         overrides=cfg.get("_overrides", {}),
     )
 
@@ -139,6 +145,8 @@ async def patch_config(
         updates["costing_strategy"] = val
     if payload.ai_confidence_threshold is not None:
         updates["ai_confidence_threshold"] = str(payload.ai_confidence_threshold)
+    if payload.margin_target is not None:
+        updates["margin_target"] = str(payload.margin_target)
 
     if not updates:
         raise HTTPException(
@@ -198,5 +206,132 @@ async def patch_config(
         replenishment_target_days=int(cfg["replenishment_target_days"]),
         costing_strategy=str(cfg["costing_strategy"]),
         ai_confidence_threshold=float(cfg["ai_confidence_threshold"]),
+        margin_target=float(cfg["margin_target"]),
         overrides=cfg.get("_overrides", {}),
+    )
+
+
+# ── Apply margin to existing products ─────────────────────────────────────────
+
+
+class ApplyMarginRequest(BaseModel):
+    applied_by: str = "system"
+    margin_override: float | None = None   # if set, use this instead of the DB config value
+
+
+class ApplyMarginProductResult(BaseModel):
+    product_id: str
+    product_name: str
+    old_price: float
+    new_price: float
+    avg_cost: float
+
+
+class ApplyMarginResponse(BaseModel):
+    margin_target: float
+    updated: int
+    skipped: int   # no cost data available
+    products: list[ApplyMarginProductResult]
+
+
+@router.post("/apply-margin", response_model=ApplyMarginResponse)
+async def apply_margin_to_all_products(
+    payload: ApplyMarginRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> ApplyMarginResponse:
+    """
+    Re-price every product in the catalog using the current margin target.
+    new_price = cost / (1 − margin_target)
+
+    Cost basis (in priority order):
+      1. Quantity-weighted average from InventoryLayerCreatedEvent records
+      2. base_price — the price the product was originally created with
+         (products added manually through the catalog use their entry price
+          as the cost, since no intake event exists yet)
+
+    Each price change fires a PriceOverriddenEvent for the audit trail.
+    """
+    from decimal import Decimal
+    from uuid import UUID
+    from sqlalchemy import text
+
+    from app.application.handlers.product_handlers import ProductCommandHandler
+    from app.domain.commands.product_commands import ApplyPriceOverrideCommand
+
+    cfg = await get_runtime_config(session)
+    margin_target: float = (
+        float(payload.margin_override)
+        if payload.margin_override is not None
+        else float(cfg.get("margin_target", 0.70))
+    )
+    margin_divisor = Decimal(str(1.0 - max(0.0, min(margin_target, 0.9999))))
+
+    # Weighted-average cost per product from intake events
+    cost_result = await session.execute(text("""
+        SELECT
+            payload->>'product_id'                                          AS product_id,
+            SUM((payload->>'quantity_received')::int
+                * (payload->>'unit_cost')::numeric)
+            / NULLIF(SUM((payload->>'quantity_received')::int), 0)          AS avg_cost
+        FROM events
+        WHERE event_type = 'InventoryLayerCreatedEvent'
+        GROUP BY payload->>'product_id'
+    """))
+    avg_cost_by_product: dict[str, Decimal] = {
+        row.product_id: Decimal(str(row.avg_cost))
+        for row in cost_result.all()
+        if row.avg_cost is not None
+    }
+
+    # All products
+    products_result = await session.execute(select(ProductReadEntity))
+    products = products_result.scalars().all()
+
+    handler = ProductCommandHandler(session)
+    # Use a deterministic system UUID for the authorized_by field
+    system_uuid = UUID("00000000-0000-0000-0000-000000000001")
+
+    updated_list: list[ApplyMarginProductResult] = []
+    skipped = 0
+
+    for product in products:
+        pid = str(product.id)
+        # Priority 1: weighted avg from intake events
+        avg_cost = avg_cost_by_product.get(pid)
+        # Priority 2: fall back to base_price (the price entered at product creation,
+        # which for manually-created products equals the purchase/cost price)
+        if avg_cost is None or avg_cost <= Decimal("0"):
+            base = Decimal(str(product.base_price))
+            if base <= Decimal("0"):
+                skipped += 1
+                continue
+            avg_cost = base
+
+        new_price = (avg_cost / margin_divisor).quantize(Decimal("0.01"))
+        old_price = float(product.current_price)
+
+        await handler.handle_apply_price_override(
+            ApplyPriceOverrideCommand(
+                product_id=UUID(pid),
+                new_price=new_price,
+                authorized_by=system_uuid,
+            )
+        )
+        updated_list.append(ApplyMarginProductResult(
+            product_id=pid,
+            product_name=product.name,
+            old_price=old_price,
+            new_price=float(new_price),
+            avg_cost=float(avg_cost),
+        ))
+        logger.info(
+            "Margin reprice: '%s' %.2f → %.2f (cost=%.4f, margin=%.0f%%)",
+            product.name, old_price, new_price, avg_cost, margin_target * 100,
+        )
+
+    return ApplyMarginResponse(
+        margin_target=margin_target,
+        updated=len(updated_list),
+        skipped=skipped,
+        products=updated_list,
     )

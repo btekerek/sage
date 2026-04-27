@@ -17,7 +17,7 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentUser, require_admin
+from app.api.deps import CurrentUser, require_admin, require_manager_or_above
 from app.core.db import get_db_session
 from app.core.security import hash_password
 from app.infrastructure.models.user import UserModel
@@ -136,6 +136,32 @@ async def list_users(
 ) -> list[UserResponse]:
     result = await session.execute(select(UserModel).order_by(UserModel.created_at))
     return [UserResponse.from_model(u) for u in result.scalars().all()]
+
+
+class UserDirectoryEntry(BaseModel):
+    id: str
+    email: str
+    role: str
+
+
+@router.get("/directory", response_model=list[UserDirectoryEntry])
+async def user_directory(
+    _: Annotated[CurrentUser, Depends(require_manager_or_above)],
+    session: AsyncSession = Depends(get_db_session),
+) -> list[UserDirectoryEntry]:
+    """Lightweight user listing (id + email + role) for managers and above.
+
+    Used by the dashboard to resolve operator UUIDs to human-readable names.
+    """
+    result = await session.execute(
+        select(UserModel.id, UserModel.email, UserModel.role)
+        .where(UserModel.is_active == True)  # noqa: E712
+        .order_by(UserModel.email)
+    )
+    return [
+        UserDirectoryEntry(id=str(row.id), email=row.email, role=row.role)
+        for row in result.all()
+    ]
 
 
 @router.post("", response_model=UserResponse, status_code=status.HTTP_201_CREATED)

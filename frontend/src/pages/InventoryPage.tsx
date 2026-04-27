@@ -12,6 +12,8 @@ interface InventoryItem {
   category_name: string | null
   base_price: string
   current_price: string
+  avg_unit_cost: string | null
+  margin: number | null
   current_stock: number
   stock_value: string
   last_intake_at: string | null
@@ -39,6 +41,7 @@ export default function InventoryPage() {
 
   const [items, setItems] = useState<InventoryItem[]>([])
   const [categories, setCategories] = useState<Category[]>([])
+  const [marginTarget, setMarginTarget] = useState<number>(0.70)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -65,12 +68,14 @@ export default function InventoryPage() {
     setLoading(true)
     setError('')
     try {
-      const [invRes, catRes] = await Promise.all([
+      const [invRes, catRes, cfgRes] = await Promise.all([
         client.get<InventoryItem[]>('/api/inventory-mgmt/summary'),
         client.get<Category[]>('/api/inventory-mgmt/categories'),
+        client.get('/api/config'),
       ])
       setItems(invRes.data)
       setCategories(catRes.data)
+      setMarginTarget(cfgRes.data.margin_target ?? 0.70)
     } catch {
       setError('Failed to load inventory. Make sure the backend is running.')
     } finally {
@@ -198,6 +203,13 @@ export default function InventoryPage() {
     if (qty === 0) return 'bg-red-100 text-red-700'
     if (qty < 10) return 'bg-yellow-100 text-yellow-700'
     return 'bg-green-100 text-green-700'
+  }
+
+  function marginBadge(margin: number | null) {
+    if (margin === null) return 'bg-gray-100 text-gray-400'
+    if (margin >= marginTarget) return 'bg-green-100 text-green-700'
+    if (margin >= marginTarget - 0.05) return 'bg-yellow-100 text-yellow-700'
+    return 'bg-red-100 text-red-700'
   }
 
   function fmt(n: string | number) {
@@ -350,8 +362,9 @@ export default function InventoryPage() {
                   <tr>
                     <th className="text-left px-4 py-3 min-w-[200px]">Product name</th>
                     <th className="text-left px-4 py-3">Category</th>
-                    <th className="text-right px-4 py-3">Base price</th>
+                    <th className="text-right px-4 py-3">Buy price</th>
                     <th className="text-right px-4 py-3">Selling price</th>
+                    <th className="text-right px-4 py-3">Margin</th>
                     <th className="text-right px-4 py-3">Stock (units)</th>
                     <th className="text-right px-4 py-3">Stock value</th>
                     <th className="text-left px-4 py-3">Last intake</th>
@@ -400,9 +413,9 @@ export default function InventoryPage() {
                           )}
                         </td>
 
-                        {/* Base price */}
-                        <td className="px-4 py-2.5 text-right text-gray-400 font-mono text-xs">
-                          {fmt(item.base_price)}
+                        {/* Buy price (avg purchase cost) */}
+                        <td className="px-4 py-2.5 text-right font-mono text-xs text-gray-500">
+                          {item.avg_unit_cost ? `${fmt(item.avg_unit_cost)} Ft` : '—'}
                         </td>
 
                         {/* Selling price */}
@@ -418,6 +431,13 @@ export default function InventoryPage() {
                           ) : (
                             <span className="font-medium">{fmt(item.current_price)} Ft</span>
                           )}
+                        </td>
+
+                        {/* Margin */}
+                        <td className="px-4 py-2.5 text-right">
+                          <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${marginBadge(item.margin)}`}>
+                            {item.margin !== null ? `${(item.margin * 100).toFixed(1)}%` : '—'}
+                          </span>
                         </td>
 
                         {/* Stock */}
@@ -501,8 +521,11 @@ export default function InventoryPage() {
         </div>
 
         <p className="text-xs text-gray-400 mt-3 text-center">
-          Prices shown in HUF · Stock value = current selling price × units on hand ·
-          Click <strong>Edit</strong> on any row to change name, category, price, or stock count
+          Prices shown in HUF · Buy price = weighted avg purchase cost from intake events ·
+          Margin = (selling − cost) ÷ selling · Stock value = selling price × units on hand ·
+          Margin badge: <span className="text-green-600 font-medium">green</span> ≥ target,{' '}
+          <span className="text-yellow-600 font-medium">amber</span> within 5pp,{' '}
+          <span className="text-red-600 font-medium">red</span> below
         </p>
       </div>
     </div>

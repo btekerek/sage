@@ -115,11 +115,11 @@ async def process_invoice(
 
 class ApproveLineItem(BaseModel):
     product_name: str
-    quantity: int
+    quantity: float          # float so 0.020 kg-style quantities aren't truncated to 0
     unit_price: Decimal
     supplier_ref: str
     cikkszam: str = ""
-    packaging_size: int = 1
+    packaging_size: float = 1.0   # can be fractional (e.g. 0.5 kg per unit)
     line_total: Decimal = Decimal("0")
 
 
@@ -167,11 +167,14 @@ async def _get_or_create_default_category(session: AsyncSession) -> UUID:
 async def _resolve_product_id(
     session: AsyncSession,
     product_name: str,
-    unit_price: Decimal,
+    unit_cost: Decimal,
     category_id: UUID,
+    margin_target: float = 0.70,
 ) -> UUID:
     """
     Find an existing product by name (case-insensitive) or create a new one.
+    For new products the selling price is derived from the unit cost and the
+    configured margin target:  selling_price = unit_cost / (1 − margin_target)
     Returns the product UUID.
     """
     from app.application.handlers.product_handlers import ProductCommandHandler
@@ -187,17 +190,28 @@ async def _resolve_product_id(
     if row is not None:
         return UUID(str(row.id))
 
-    # Product not found — create it
+    # Product not found — auto-create with margin-based selling price
+    # selling_price = unit_cost / (1 − margin_target)
+    # e.g. cost = 100 Ft, margin = 65 % → selling_price = 285.71 Ft
+    margin_divisor = Decimal(str(1.0 - max(0.0, min(float(margin_target), 0.9999))))
+    if margin_divisor > Decimal("0") and unit_cost > Decimal("0"):
+        selling_price = (unit_cost / margin_divisor).quantize(Decimal("0.01"))
+    else:
+        selling_price = unit_cost   # fallback: cost price
+
     product_id = uuid4()
     command = CreateProductCommand(
         name=product_name.strip(),
-        unit_price=unit_price,
+        unit_price=selling_price,
         category_id=category_id,
         aggregate_id=product_id,
     )
     handler = ProductCommandHandler(session)
     await handler.handle_create_product(command)
-    logger.info("Auto-created product '%s' with id %s", product_name, product_id)
+    logger.info(
+        "Auto-created product '%s' (id=%s) cost=%.4f margin=%.0f%% → price=%.2f",
+        product_name, product_id, unit_cost, float(margin_target) * 100, selling_price,
+    )
     return product_id
 
 
@@ -218,6 +232,10 @@ async def approve_invoice(
     from app.application.handlers.inventory_handlers import InventoryCommandHandler
     from app.domain.commands.inventory_commands import CreateInventoryLayerCommand
 
+    from app.api.routes.config import get_runtime_config
+    live_cfg = await get_runtime_config(session)
+    margin_target: float = float(live_cfg.get("margin_target", 0.65))
+
     inv_handler = InventoryCommandHandler(session)
     created_ids: list[UUID] = []
 
@@ -225,22 +243,35 @@ async def approve_invoice(
     default_category_id = await _get_or_create_default_category(session)
 
     for item in payload.line_items:
-        # Resolve or create the product in the catalog
-        product_id = await _resolve_product_id(
-            session,
-            product_name=item.product_name,
-            unit_price=item.unit_price,
-            category_id=default_category_id,
-        )
+        # Total individual units = packages ordered × units per package.
+        # Both fields are float so kg/fractional quantities from Metro-style
+        # invoices aren't silently truncated to 0 by Pydantic int coercion.
+        raw_units = item.quantity * max(item.packaging_size, 1.0)
+        total_units = max(1, round(raw_units)) if raw_units >= 0.5 else 0
 
-        # Total individual units = packages ordered × units per package
-        total_units = item.quantity * max(item.packaging_size, 1)
+        # Skip items that carry no stock (deposit fees, charges, zero-qty rows, etc.)
+        # A zero-quantity layer would silently commit without changing stock levels.
+        if total_units <= 0:
+            logger.info(
+                "Skipping zero-quantity line item '%s' (qty=%s pack=%s)",
+                item.product_name, item.quantity, item.packaging_size,
+            )
+            continue
 
         # Per-unit cost: prefer line_total (net) ÷ total_units; fall back to unit_price
         if item.line_total > Decimal("0") and total_units > 0:
             unit_cost = (item.line_total / Decimal(str(total_units))).quantize(Decimal("0.0001"))
         else:
             unit_cost = item.unit_price
+
+        # Resolve or auto-create the product, using unit_cost for margin-based pricing
+        product_id = await _resolve_product_id(
+            session,
+            product_name=item.product_name,
+            unit_cost=unit_cost,
+            category_id=default_category_id,
+            margin_target=margin_target,
+        )
 
         layer_id = uuid4()
         command = CreateInventoryLayerCommand(

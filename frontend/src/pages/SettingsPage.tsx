@@ -15,6 +15,7 @@ interface Config {
   replenishment_target_days: number
   costing_strategy: string
   ai_confidence_threshold: number
+  margin_target: number
   overrides: Record<string, string>
 }
 
@@ -43,6 +44,14 @@ export default function SettingsPage() {
   const [targetDays, setTargetDays] = useState('')
   const [costingStrategy, setCostingStrategy] = useState('FIFO')
   const [confidenceThreshold, setConfidenceThreshold] = useState('')
+  const [marginTarget, setMarginTarget] = useState('')
+
+  // Apply-margin state
+  const [applyingMargin, setApplyingMargin] = useState(false)
+  const [applyMarginResult, setApplyMarginResult] = useState<{
+    updated: number; skipped: number; margin_target: number
+  } | null>(null)
+  const [applyMarginError, setApplyMarginError] = useState<string | null>(null)
 
   useEffect(() => {
     load()
@@ -58,6 +67,7 @@ export default function SettingsPage() {
       setTargetDays(String(cfg.replenishment_target_days))
       setCostingStrategy(cfg.costing_strategy)
       setConfidenceThreshold(String(cfg.ai_confidence_threshold))
+      setMarginTarget(String(cfg.margin_target))
     } catch (e: any) {
       setError(e?.response?.data?.detail ?? e?.message ?? 'Failed to load config')
     } finally {
@@ -75,6 +85,7 @@ export default function SettingsPage() {
         replenishment_target_days: parseInt(targetDays, 10),
         costing_strategy: costingStrategy,
         ai_confidence_threshold: parseFloat(confidenceThreshold),
+        margin_target: parseFloat(marginTarget),
         updated_by: user?.email ?? 'manager',
       })
       setConfig(r.data)
@@ -87,11 +98,29 @@ export default function SettingsPage() {
     }
   }
 
+  async function handleApplyMargin() {
+    setApplyingMargin(true)
+    setApplyMarginResult(null)
+    setApplyMarginError(null)
+    try {
+      const r = await client.post('/api/config/apply-margin', {
+        applied_by: user?.email ?? 'manager',
+        margin_override: parseFloat(marginTarget),
+      })
+      setApplyMarginResult(r.data)
+    } catch (e: any) {
+      setApplyMarginError(e?.response?.data?.detail ?? e?.message ?? 'Failed to apply margin')
+    } finally {
+      setApplyingMargin(false)
+    }
+  }
+
   if (loading) return (
     <div className="flex-1 flex items-center justify-center text-gray-400">Loading…</div>
   )
 
   const isOverride = (key: string) => key in (config?.overrides ?? {})
+  const marginPct = parseFloat(marginTarget) || 0
 
   return (
     <div className="max-w-2xl mx-auto px-6 py-8">
@@ -110,6 +139,73 @@ export default function SettingsPage() {
           ⚠ {error}
         </div>
       )}
+
+      {/* ── Pricing & Margins ────────────────────────────────────────────────── */}
+      <section className="bg-white rounded-lg border border-gray-200 mb-6 overflow-hidden">
+        <div className="px-5 py-3 bg-gray-50 border-b">
+          <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
+            Pricing &amp; Margins
+          </h2>
+        </div>
+        <div className="px-5 py-5">
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            Margin target
+            <Badge label="margin_target" isOverride={isOverride('margin_target')} />
+          </label>
+          <div className="flex items-center gap-4">
+            <input
+              type="range"
+              min={0}
+              max={0.99}
+              step={0.01}
+              value={marginTarget}
+              onChange={e => setMarginTarget(e.target.value)}
+              className="flex-1 accent-indigo-600"
+            />
+            <span className="w-14 text-center font-mono text-sm font-semibold text-gray-700">
+              {(marginPct * 100).toFixed(0)}%
+            </span>
+          </div>
+          <p className="text-xs text-gray-400 mt-2">
+            When a supplier invoice introduces a product that doesn't exist in the catalog yet,
+            the selling price is set automatically as:
+            <span className="font-mono ml-1">selling = cost ÷ (1 − target)</span>.
+            At {(marginPct * 100).toFixed(0)}% margin, a 100 Ft cost item will be priced at{' '}
+            <span className="font-mono font-semibold">
+              {marginPct < 1 ? (100 / (1 - marginPct)).toFixed(2) : '∞'} Ft
+            </span>.
+            The dashboard displays actual portfolio margin vs. this target.
+          </p>
+
+          {/* Apply to existing products */}
+          <div className="mt-4 pt-4 border-t border-gray-100">
+            <div className="flex items-center gap-3 flex-wrap">
+              <button
+                onClick={handleApplyMargin}
+                disabled={applyingMargin}
+                className="bg-amber-500 text-white px-4 py-2 rounded text-sm font-medium hover:bg-amber-600 disabled:opacity-50"
+              >
+                {applyingMargin ? 'Repricing…' : `Apply ${(marginPct * 100).toFixed(0)}% to all existing products`}
+              </button>
+              {applyMarginResult && (
+                <span className="text-sm text-green-700 font-medium">
+                  ✓ {applyMarginResult.updated} product{applyMarginResult.updated !== 1 ? 's' : ''} repriced
+                  {applyMarginResult.skipped > 0 && `, ${applyMarginResult.skipped} skipped (no cost data)`}
+                </span>
+              )}
+              {applyMarginError && (
+                <span className="text-sm text-red-600">{applyMarginError}</span>
+              )}
+            </div>
+            <p className="text-xs text-gray-400 mt-1.5">
+              Recalculates the selling price of every product: uses the weighted-average
+              purchase cost from intake events where available, or the original creation price
+              as the cost basis for products added manually. Each change is recorded in the
+              audit trail.
+            </p>
+          </div>
+        </div>
+      </section>
 
       {/* ── Replenishment ────────────────────────────────────────────────────── */}
       <section className="bg-white rounded-lg border border-gray-200 mb-6 overflow-hidden">
@@ -257,6 +353,10 @@ export default function SettingsPage() {
             Current effective values
           </h3>
           <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+            <dt className="text-gray-500">Margin target</dt>
+            <dd className="font-mono font-medium text-gray-900">
+              {(config.margin_target * 100).toFixed(0)}%
+            </dd>
             <dt className="text-gray-500">Replenishment budget</dt>
             <dd className="font-mono font-medium text-gray-900">
               {config.replenishment_budget.toLocaleString('hu-HU')} Ft

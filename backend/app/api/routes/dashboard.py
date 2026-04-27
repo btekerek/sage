@@ -9,8 +9,11 @@ GET /api/events                  — paginated audit trail
 
 import asyncio
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -23,6 +26,11 @@ from app.core.db import get_db_session
 from app.core.security import decode_token
 from app.infrastructure.event_store.models import StoredEvent
 
+from app.infrastructure.projectors.read_entities import (
+    InventoryLayerReadEntity,
+    ProductReadEntity,
+)
+
 router = APIRouter(tags=["dashboard"])
 
 
@@ -32,7 +40,7 @@ router = APIRouter(tags=["dashboard"])
 class KPISummary(BaseModel):
     today_revenue: float
     today_transactions: int
-    today_void_count: int
+    today_units_sold: int
     total_revenue: float
     total_transactions: int
 
@@ -58,11 +66,15 @@ async def get_kpis(
                     THEN 1
                 END) AS today_transactions,
 
-                COUNT(CASE
-                    WHEN event_type = 'VoidEvent'
-                     AND occurred_at_utc::date = CURRENT_DATE
-                    THEN 1
-                END) AS today_void_count,
+                (
+                    SELECT COALESCE(SUM((item->>'quantity')::int), 0)
+                    FROM events e2
+                    CROSS JOIN LATERAL jsonb_array_elements(
+                        COALESCE(e2.payload->'line_items', '[]'::jsonb)
+                    ) AS item
+                    WHERE e2.event_type = 'SaleEvent'
+                      AND e2.occurred_at_utc::date = CURRENT_DATE
+                ) AS today_units_sold,
 
                 COALESCE(SUM(CASE
                     WHEN event_type = 'SaleEvent'
@@ -81,7 +93,7 @@ async def get_kpis(
         return KPISummary(
             today_revenue=float(row.today_revenue),
             today_transactions=int(row.today_transactions),
-            today_void_count=int(row.today_void_count),
+            today_units_sold=int(row.today_units_sold),
             total_revenue=float(row.total_revenue),
             total_transactions=int(row.total_transactions),
         )
@@ -89,9 +101,138 @@ async def get_kpis(
         return KPISummary(
             today_revenue=0,
             today_transactions=0,
-            today_void_count=0,
+            today_units_sold=0,
             total_revenue=0,
             total_transactions=0,
+        )
+
+
+# ── Portfolio Margin ──────────────────────────────────────────────────────
+
+
+class MarginProduct(BaseModel):
+    product_id: str
+    product_name: str
+    selling_price: float
+    avg_unit_cost: float
+    stock: int
+    margin: float          # (selling - cost) / selling
+
+
+class MarginSummary(BaseModel):
+    portfolio_margin: float         # revenue-weighted average
+    margin_target: float
+    meets_target: bool
+    products: list[MarginProduct]
+
+
+@router.get("/api/dashboard/margin", response_model=MarginSummary)
+async def get_margin(
+    session: AsyncSession = Depends(get_db_session),
+) -> MarginSummary:
+    """
+    Compute the current portfolio gross margin.
+
+    Method:
+      - avg unit cost per product = weighted average from InventoryLayerCreatedEvent
+      - selling price = product_read.current_price
+      - margin per product = (selling - cost) / selling
+      - portfolio margin = weighted by (selling_price × stock) across all stocked products
+    """
+    from app.api.routes.config import get_runtime_config
+
+    live_cfg = await get_runtime_config(session)
+    margin_target = float(live_cfg.get("margin_target", 0.70))
+
+    try:
+        # Weighted average cost per product from intake events
+        cost_result = await session.execute(text("""
+            SELECT
+                payload->>'product_id'                                          AS product_id,
+                SUM((payload->>'quantity_received')::int
+                    * (payload->>'unit_cost')::numeric)
+                / NULLIF(SUM((payload->>'quantity_received')::int), 0)          AS avg_cost
+            FROM events
+            WHERE event_type = 'InventoryLayerCreatedEvent'
+            GROUP BY payload->>'product_id'
+        """))
+        avg_cost_by_product: dict[str, float] = {
+            row.product_id: float(row.avg_cost)
+            for row in cost_result.all()
+            if row.avg_cost is not None
+        }
+
+        # Current stock per product
+        stock_result = await session.execute(
+            select(
+                InventoryLayerReadEntity.product_id,
+                func.sum(InventoryLayerReadEntity.quantity).label("total_stock"),
+            ).group_by(InventoryLayerReadEntity.product_id)
+        )
+        stock_by_product: dict[str, int] = {
+            str(row.product_id): int(row.total_stock)
+            for row in stock_result.all()
+        }
+
+        if not stock_by_product:
+            return MarginSummary(
+                portfolio_margin=0.0,
+                margin_target=margin_target,
+                meets_target=False,
+                products=[],
+            )
+
+        # Selling prices
+        products_result = await session.execute(
+            select(ProductReadEntity).where(
+                ProductReadEntity.id.in_(list(stock_by_product.keys()))
+            )
+        )
+        products = products_result.scalars().all()
+
+        product_rows: list[MarginProduct] = []
+        weighted_margin_sum = 0.0
+        weight_sum = 0.0
+
+        for p in products:
+            pid = str(p.id)
+            stock = stock_by_product.get(pid, 0)
+            if stock <= 0:
+                continue
+            selling = float(p.current_price)
+            cost = avg_cost_by_product.get(pid)
+            if cost is None or selling <= 0:
+                continue
+            margin = (selling - cost) / selling
+            weight = selling * stock
+            weighted_margin_sum += margin * weight
+            weight_sum += weight
+            product_rows.append(MarginProduct(
+                product_id=pid,
+                product_name=p.name,
+                selling_price=selling,
+                avg_unit_cost=cost,
+                stock=stock,
+                margin=round(margin, 4),
+            ))
+
+        portfolio_margin = (weighted_margin_sum / weight_sum) if weight_sum > 0 else 0.0
+        product_rows.sort(key=lambda r: r.margin)   # worst first
+
+        return MarginSummary(
+            portfolio_margin=round(portfolio_margin, 4),
+            margin_target=margin_target,
+            meets_target=portfolio_margin >= margin_target,
+            products=product_rows,
+        )
+
+    except Exception as exc:
+        logger.exception("Failed to compute margin: %s", exc)
+        return MarginSummary(
+            portfolio_margin=0.0,
+            margin_target=margin_target,
+            meets_target=False,
+            products=[],
         )
 
 
@@ -246,7 +387,7 @@ async def get_audit_trail(
     total = total_result.scalar_one()
 
     stmt = (
-        stmt.order_by(StoredEvent.sequence_number.desc())
+        stmt.order_by(StoredEvent.occurred_at_utc.desc(), StoredEvent.id.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
     )

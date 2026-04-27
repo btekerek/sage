@@ -4,6 +4,22 @@ import client from '../api/client'
 import { v4 as uuidv4 } from 'uuid'
 import { useAuthStore } from '../store/authStore'
 
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+/**
+ * Derive the effective VAT rate from net and gross line totals.
+ * Result is snapped to the nearest valid Hungarian VAT tier: 0 | 5 | 18 | 27.
+ * Returns null if either value is missing or the calculation is degenerate.
+ */
+function deriveVatRate(net: number | string | undefined, brutto: number | string | undefined): number | null {
+  const n = parseFloat(String(net ?? ''))
+  const b = parseFloat(String(brutto ?? ''))
+  if (!isFinite(n) || !isFinite(b) || n <= 0 || b <= 0) return null
+  const rawPct = ((b - n) / n) * 100
+  if (rawPct < -0.5) return null   // brutto < netto is invalid data
+  return Math.round(rawPct)        // round to nearest integer — no hardcoded tier list
+}
+
 // ── Types ──────────────────────────────────────────────────────────────────
 
 interface TxLineItem {
@@ -24,15 +40,22 @@ interface TxEntry {
     total_amount?: string
     line_items?: TxLineItem[]
     reason?: string
+    operator_id?: string
   }
 }
 
 interface KPISummary {
   today_revenue: number
   today_transactions: number
-  today_void_count: number
+  today_units_sold: number
   total_revenue: number
   total_transactions: number
+}
+
+interface MarginSummary {
+  portfolio_margin: number
+  margin_target: number
+  meets_target: boolean
 }
 
 interface Suggestion {
@@ -58,6 +81,7 @@ interface ReplenishmentResult {
 export default function DashboardPage() {
   const [kpis, setKpis] = useState<KPISummary | null>(null)
   const [replenishment, setReplenishment] = useState<ReplenishmentResult | null>(null)
+  const [margin, setMargin] = useState<MarginSummary | null>(null)
   const [loading, setLoading] = useState(true)
 
   const [invoiceResult, setInvoiceResult] = useState<any>(null)
@@ -75,6 +99,8 @@ export default function DashboardPage() {
   // Live transactions feed
   const [transactions, setTransactions] = useState<TxEntry[]>([])
   const [txExpanded, setTxExpanded] = useState<number | null>(null)
+  // Map of user id → email for resolving operator_id in transactions
+  const [userMap, setUserMap] = useState<Record<string, string>>({})
 
   // PDF viewer state
   const [pdfPage, setPdfPage] = useState(1)
@@ -111,12 +137,18 @@ export default function DashboardPage() {
   useEffect(() => {
     async function fetchData() {
       try {
-        const [kpiRes, repRes] = await Promise.all([
+        const [kpiRes, repRes, marginRes, usersRes] = await Promise.all([
           client.get('/api/dashboard/kpis'),
           client.get('/api/replenishment/suggestions'),
+          client.get('/api/dashboard/margin'),
+          client.get<{ id: string; email: string; role: string }[]>('/api/users/directory').catch(() => ({ data: [] })),
         ])
         setKpis(kpiRes.data)
         setReplenishment(repRes.data)
+        setMargin(marginRes.data)
+        const map: Record<string, string> = {}
+        for (const u of usersRes.data) map[u.id] = u.email
+        setUserMap(map)
       } catch (e) {
         console.error('Failed to fetch dashboard data', e)
       } finally {
@@ -149,16 +181,17 @@ export default function DashboardPage() {
           if (!prev) return prev
           if (tx.event_type === 'SaleEvent') {
             const amt = Number(tx.payload.total_amount ?? 0)
+            const units = (tx.payload.line_items ?? []).reduce(
+              (sum, li) => sum + (li.quantity ?? 0), 0
+            )
             return {
               ...prev,
               today_revenue: prev.today_revenue + amt,
               today_transactions: prev.today_transactions + 1,
+              today_units_sold: prev.today_units_sold + units,
               total_revenue: prev.total_revenue + amt,
               total_transactions: prev.total_transactions + 1,
             }
-          }
-          if (tx.event_type === 'VoidEvent') {
-            return { ...prev, today_void_count: prev.today_void_count + 1 }
           }
           return prev
         })
@@ -268,11 +301,15 @@ export default function DashboardPage() {
         const [, canvasYTop] = viewport.convertToViewportPoint(0, pdfHighlight.y + pdfHighlight.h)
         const rectY = Math.min(canvasYBottom, canvasYTop) - 4
         const rectH = Math.abs(canvasYBottom - canvasYTop) + 8
+        // Use horizontal padding so the band doesn't span the full canvas width
+        const padX = 6
+        const bandX = padX
+        const bandW = overlay.width - padX * 2
         overlayCtx.fillStyle = 'rgba(255, 215, 0, 0.45)'
-        overlayCtx.fillRect(0, rectY, overlay.width, rectH)
+        overlayCtx.fillRect(bandX, rectY, bandW, rectH)
         overlayCtx.strokeStyle = 'rgba(200, 130, 0, 0.85)'
-        overlayCtx.lineWidth = 2
-        overlayCtx.strokeRect(0, rectY, overlay.width, rectH)
+        overlayCtx.lineWidth = 1.5
+        overlayCtx.strokeRect(bandX, rectY, bandW, rectH)
       }
     }
 
@@ -404,44 +441,23 @@ export default function DashboardPage() {
     // For image invoices PDF.js has no document — just mark the row selected
     if (!pdfDocRef.current) return
 
-    // ── Primary: use Claude's y_fraction to highlight directly ─────────────
-    // Claude reported where on the page this row sits (0.0 = top, 1.0 = bottom)
-    // while it was already looking at the image — no text layer needed.
-    const targetPage: number = item.source_page ?? 1
-
-    // Only use y_fraction when the API actually returned it (not the 0.5 default
-    // for items processed before this field existed).
-    if (item.y_fraction != null) {
-      const yFraction = item.y_fraction as number
-      const doc = pdfDocRef.current
-      const page = await doc.getPage(targetPage)
-      // At scale:1, viewport.height is the page height in PDF points (no viewBox needed)
-      const baseVp = page.getViewport({ scale: 1 })
-      const pageHeightPt = baseVp.height
-      // PDF Y=0 is at the bottom; y_fraction 0=top → pdfY = pageHeightPt
-      const rowHeightPt = Math.max(pageHeightPt * 0.03, 18)   // at least 18pt tall
-      const pdfY = pageHeightPt * (1 - yFraction) - rowHeightPt / 2
-
-      setPdfPage(targetPage)
-      setPdfHighlight({ page: targetPage, y: pdfY, h: rowHeightPt * 2 })
-      return
-    }
-
-    // ── Fallback: text-layer search (for re-processed PDFs without y_fraction) ──
-    const cikkszam = (item.cikkszam || '').trim()
-    const keywords = cikkszam
-      ? []
-      : (item.product_name || '')
-          .split(/\s+/)
-          .map((w: string) => w.toLowerCase().trim())
-          .filter((w: string) => w.length > 3)
-
     const doc = pdfDocRef.current
-    setPdfPage(targetPage)
+    const targetPage: number = item.source_page ?? 1
+    const cikkszam = (item.cikkszam || '').trim()
+    const productKeywords = (item.product_name || '')
+      .split(/\s+/)
+      .map((w: string) => w.toLowerCase().trim())
+      .filter((w: string) => w.length > 3)
 
-    for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
+    // Helper: extract grouped lines from a single page's text content.
+    // Returns null if the page has no text (scanned image page).
+    async function getPageLines(pageNum: number) {
       const page = await doc.getPage(pageNum)
       const content = await page.getTextContent()
+      const hasText = (content.items as any[]).some(
+        (it: any) => 'str' in it && it.str.trim().length > 0
+      )
+      if (!hasText) return null
       const lines: { y: number; h: number; text: string; compact: string }[] = []
       for (const textItem of content.items as any[]) {
         if (!('str' in textItem) || !textItem.str.trim()) continue
@@ -457,26 +473,84 @@ export default function DashboardPage() {
           lines.push({ y, h, text: str, compact: str.replace(/\s+/g, '') })
         }
       }
-      if (lines.length === 0) continue
-      let bestLine: { y: number; h: number } | null = null
-      if (cikkszam) {
+      return lines.length > 0 ? lines : null
+    }
+
+    // Score a line against the product name keywords
+    function keywordScore(line: { text: string; compact: string }) {
+      const haystack = line.text + ' ' + line.compact
+      const exact = productKeywords.filter((kw: string) => haystack.includes(kw)).length
+      const partial = productKeywords.filter((kw: string) => kw.length >= 5 && haystack.includes(kw.slice(0, 5))).length
+      return exact * 2 + partial
+    }
+
+    // ── Strategy 1: cikkszam on targetPage ─────────────────────────────────
+    // Restrict to targetPage only — Claude's source_page is reliable even when
+    // y_fraction isn't. Searching other pages would find the same cikkszam
+    // (e.g. deposit-fee rows repeated across pages) at the wrong position.
+    if (cikkszam) {
+      const lines = await getPageLines(targetPage)
+      if (lines) {
         const needle = cikkszam.toLowerCase().replace(/\s+/g, '')
-        bestLine = lines.find(l => l.compact.includes(needle) || l.text.includes(needle)) ?? null
-      } else if (keywords.length > 0) {
+        const matches = lines.filter(l => l.compact.includes(needle) || l.text.includes(needle))
+        if (matches.length === 1) {
+          setPdfPage(targetPage)
+          setPdfHighlight({ page: targetPage, y: matches[0].y, h: Math.max(matches[0].h, 18) })
+          return
+        }
+        if (matches.length > 1) {
+          // Same cikkszam on multiple rows (e.g. deposit fee repeated) —
+          // use product name keywords as a tiebreaker.
+          let best = matches[0]
+          let bestScore = keywordScore(matches[0])
+          for (let mi = 1; mi < matches.length; mi++) {
+            const s = keywordScore(matches[mi])
+            if (s > bestScore) { bestScore = s; best = matches[mi] }
+          }
+          setPdfPage(targetPage)
+          setPdfHighlight({ page: targetPage, y: best.y, h: Math.max(best.h, 18) })
+          return
+        }
+        // cikkszam not found on targetPage — fall through to keyword search
+      }
+    }
+
+    // ── Strategy 2: keyword search across all pages (targetPage first) ─────
+    if (productKeywords.length > 0) {
+      const searchPages = [
+        targetPage,
+        ...Array.from({ length: doc.numPages }, (_, i) => i + 1).filter(p => p !== targetPage),
+      ]
+      for (const pageNum of searchPages) {
+        const lines = await getPageLines(pageNum)
+        if (lines === null) break  // scanned PDF — stop, fall through to y_fraction
+
         let bestScore = 0
+        let bestLine: { y: number; h: number } | null = null
         for (const line of lines) {
-          const haystack = line.text + ' ' + line.compact
-          const exact = keywords.filter((kw: string) => haystack.includes(kw)).length
-          const partial = keywords.filter((kw: string) => kw.length >= 5 && haystack.includes(kw.slice(0, 5))).length
-          const score = exact * 2 + partial
+          const score = keywordScore(line)
           if (score > 0 && score > bestScore) { bestScore = score; bestLine = line }
         }
+        if (bestLine) {
+          setPdfPage(pageNum)
+          setPdfHighlight({ page: pageNum, y: bestLine.y, h: Math.max(bestLine.h, 18) })
+          return
+        }
       }
-      if (bestLine) {
-        setPdfPage(pageNum)
-        setPdfHighlight({ page: pageNum, y: bestLine.y, h: Math.max(bestLine.h, 12) })
-        return
-      }
+    }
+
+    // ── Fallback: y_fraction (scanned / image-only PDFs) ────────────────────
+    // Claude reports 0.0 = top of page, 1.0 = bottom while looking at the image.
+    if (item.y_fraction != null) {
+      const yFraction = item.y_fraction as number
+      const page = await doc.getPage(targetPage)
+      const baseVp = page.getViewport({ scale: 1 })
+      const pageHeightPt = baseVp.height
+      const rowHeightPt = Math.max(pageHeightPt * 0.03, 18)
+      const pdfY = pageHeightPt * (1 - yFraction) - rowHeightPt / 2
+      setPdfPage(targetPage)
+      setPdfHighlight({ page: targetPage, y: pdfY, h: rowHeightPt * 2 })
+      return
     }
 
     // Product not found in text — clear highlight but keep row selected
@@ -523,11 +597,11 @@ export default function DashboardPage() {
         <h2 className="text-2xl font-bold mb-6">Management Dashboard</h2>
 
         {/* ── KPI Cards ──────────────────────────────────────────────── */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
           <div className="bg-white rounded-lg shadow p-4">
             <p className="text-xs text-gray-500 uppercase tracking-wide">Today's Revenue</p>
             <p className="text-2xl font-bold text-green-600 mt-1">
-              ${loading ? '—' : (kpis?.today_revenue ?? 0).toFixed(2)}
+              {loading ? '—' : (kpis?.today_revenue ?? 0).toLocaleString('hu-HU')} Ft
             </p>
           </div>
           <div className="bg-white rounded-lg shadow p-4">
@@ -537,23 +611,56 @@ export default function DashboardPage() {
             </p>
           </div>
           <div className="bg-white rounded-lg shadow p-4">
-            <p className="text-xs text-gray-500 uppercase tracking-wide">Today's Voids</p>
-            <p className="text-2xl font-bold text-red-500 mt-1">
-              {loading ? '—' : kpis?.today_void_count ?? 0}
+            <p className="text-xs text-gray-500 uppercase tracking-wide">Units Sold Today</p>
+            <p className="text-2xl font-bold text-indigo-600 mt-1">
+              {loading ? '—' : kpis?.today_units_sold ?? 0}
             </p>
           </div>
           <div className="bg-white rounded-lg shadow p-4">
             <p className="text-xs text-gray-500 uppercase tracking-wide">All-Time Revenue</p>
             <p className="text-2xl font-bold text-gray-700 mt-1">
-              ${loading ? '—' : (kpis?.total_revenue ?? 0).toFixed(2)}
+              {loading ? '—' : (kpis?.total_revenue ?? 0).toLocaleString('hu-HU')} Ft
             </p>
           </div>
           <div className="bg-white rounded-lg shadow p-4">
             <p className="text-xs text-gray-500 uppercase tracking-wide">Reorder Budget Left</p>
             <p className="text-2xl font-bold text-purple-600 mt-1">
-              ${replenishment ? Number(replenishment.budget_remaining).toFixed(2) : '—'}
+              {replenishment ? Number(replenishment.budget_remaining).toLocaleString('hu-HU') : '—'} Ft
             </p>
           </div>
+
+          {/* Margin card */}
+          {(() => {
+            const pm = margin?.portfolio_margin ?? null
+            const target = margin?.margin_target ?? null
+            const meetsTarget = margin?.meets_target ?? false
+            const gap = pm != null && target != null ? pm - target : null
+            const color = pm == null
+              ? 'text-gray-400'
+              : meetsTarget
+                ? 'text-green-600'
+                : gap != null && gap >= -0.05
+                  ? 'text-amber-500'
+                  : 'text-red-600'
+            return (
+              <div className="bg-white rounded-lg shadow p-4">
+                <p className="text-xs text-gray-500 uppercase tracking-wide">Portfolio Margin</p>
+                <p className={`text-2xl font-bold mt-1 ${color}`}>
+                  {pm == null ? '—' : `${(pm * 100).toFixed(1)}%`}
+                </p>
+                {target != null && (
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    target {(target * 100).toFixed(0)}%
+                    {gap != null && (
+                      <span className={meetsTarget ? ' text-green-500' : ' text-red-400'}>
+                        {' '}{gap >= 0 ? '+' : ''}{(gap * 100).toFixed(1)}pp
+                      </span>
+                    )}
+                  </p>
+                )}
+              </div>
+            )
+          })()}
         </div>
 
         {/* ── Live Transactions Feed ─────────────────────────────────── */}
@@ -586,6 +693,12 @@ export default function DashboardPage() {
                   ?.map(li => `${li.product_name} ×${li.quantity}`)
                   .join(', ') ?? ''
                 const isExpanded = txExpanded === tx.id
+                const operatorRaw = tx.payload.operator_id ? userMap[tx.payload.operator_id] : null
+                const operatorName = operatorRaw
+                  ? operatorRaw.split('@')[0]
+                  : tx.payload.operator_id
+                    ? 'staff' // operator_id exists but not resolved (old sale or directory unavailable)
+                    : null
 
                 return (
                   <div
@@ -614,6 +727,11 @@ export default function DashboardPage() {
                         {isSale && tx.payload.payment_method && (
                           <span className="text-xs px-2 py-0.5 bg-gray-100 rounded text-gray-600">
                             {tx.payload.payment_method}
+                          </span>
+                        )}
+                        {operatorName && (
+                          <span className="text-xs px-2 py-0.5 bg-blue-50 text-blue-700 rounded font-medium hidden sm:inline-block" title="Cashier">
+                            👤 {operatorName}
                           </span>
                         )}
                         <span className="text-xs text-gray-400 w-20 text-right">{time}</span>
@@ -652,6 +770,11 @@ export default function DashboardPage() {
                         {isVoid && (
                           <p className="text-xs text-red-600 italic">
                             Void reason: {tx.payload.reason || '(no reason given)'}
+                          </p>
+                        )}
+                        {operatorName && (
+                          <p className="text-xs text-gray-500 mt-2">
+                            Cashier: <span className="font-medium text-gray-700">{operatorName}</span>
                           </p>
                         )}
                       </div>
@@ -1083,11 +1206,26 @@ export default function DashboardPage() {
                                   }`}
                                 />
                               </td>
-                              {/* ÁFA% */}
+                              {/* ÁFA% — prefer value computed from net/brut; show AI rate below if it differs */}
                               <td className="px-3 py-1.5">
-                                <span className="text-xs font-mono text-gray-600">
-                                  {item.vat_rate ? `${item.vat_rate}%` : '—'}
-                                </span>
+                                {(() => {
+                                  const computed = deriveVatRate(item.line_total, item.brutto_line_total)
+                                  const extracted = item.vat_rate != null && item.vat_rate !== '' ? Number(item.vat_rate) : null
+                                  const display = computed ?? extracted
+                                  const mismatch = computed !== null && extracted !== null && Math.abs(computed - extracted) > 0.5
+                                  return (
+                                    <div>
+                                      <span className={`text-xs font-mono font-medium ${mismatch ? 'text-amber-600' : 'text-gray-700'}`}>
+                                        {display != null ? `${display}%` : '—'}
+                                      </span>
+                                      {mismatch && (
+                                        <div className="text-xs text-gray-400 leading-tight" title="VAT rate extracted by AI — overridden by net/brut calculation">
+                                          AI: {extracted}%
+                                        </div>
+                                      )}
+                                    </div>
+                                  )
+                                })()}
                               </td>
                               {/* Bruttó */}
                               <td className="px-3 py-1.5">

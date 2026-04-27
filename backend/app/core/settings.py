@@ -46,6 +46,12 @@ class Settings(BaseSettings):
         "FIFO",
         alias="COSTING_STRATEGY",
     )
+    margin_target: float = Field(
+        0.70,
+        alias="MARGIN_TARGET",
+        ge=0.0,
+        lt=1.0,
+    )
 
     @field_validator("costing_strategy", mode="before")
     @classmethod

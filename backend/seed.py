@@ -21,6 +21,7 @@ from app.application.handlers.category_handlers import CategoryCommandHandler
 from app.application.handlers.inventory_handlers import InventoryCommandHandler
 from app.application.handlers.product_handlers import ProductCommandHandler
 from app.core.security import hash_password
+from app.core.settings import get_settings
 from app.domain.commands.category_commands import CreateCategoryCommand
 from app.domain.commands.inventory_commands import CreateInventoryLayerCommand
 from app.domain.commands.product_commands import CreateProductCommand
@@ -36,32 +37,33 @@ from app.infrastructure.projectors.read_entities import (
 # ── Data ──────────────────────────────────────────────────────────────────────
 
 USERS = [
-    {"email": "admin@sage.com",   "password": "admin123",   "role": "admin"},
-    {"email": "manager@sage.com", "password": "manager123", "role": "manager"},
-    {"email": "staff@sage.com",   "password": "staff123",   "role": "staff"},
+    {"email": "admin@sage.com",   "password": "Admin123!",   "role": "admin"},
+    {"email": "manager@sage.com", "password": "Manager123!", "role": "manager"},
+    {"email": "staff@sage.com",   "password": "Staff123!",   "role": "staff"},
 ]
 
-# (category_name, [(product_name, unit_price, opening_stock), ...])
+# (category_name, [(product_name, supplier_cost, opening_stock), ...])
+# supplier_cost = what we pay for one unit; selling price is derived from the margin target.
 CATALOG = [
     ("Beverages", [
-        ("Mineral Water 0.5L",  Decimal("199"),  50),
-        ("Orange Juice 1L",     Decimal("599"),  30),
-        ("Cola 0.33L",          Decimal("349"),  40),
+        ("Mineral Water 0.5L",  Decimal("60"),   50),
+        ("Orange Juice 1L",     Decimal("180"),  30),
+        ("Cola 0.33L",          Decimal("105"),  40),
     ]),
     ("Snacks", [
-        ("Potato Chips 100g",   Decimal("449"),  25),
-        ("Chocolate Bar 50g",   Decimal("299"),  35),
-        ("Mixed Nuts 200g",     Decimal("899"),  20),
+        ("Potato Chips 100g",   Decimal("135"),  25),
+        ("Chocolate Bar 50g",   Decimal("90"),   35),
+        ("Mixed Nuts 200g",     Decimal("270"),  20),
     ]),
     ("Dairy", [
-        ("Full-Fat Milk 1L",    Decimal("399"),  20),
-        ("Greek Yogurt 150g",   Decimal("349"),  15),
-        ("Butter 250g",         Decimal("699"),  12),
+        ("Full-Fat Milk 1L",    Decimal("120"),  20),
+        ("Greek Yogurt 150g",   Decimal("105"),  15),
+        ("Butter 250g",         Decimal("210"),  12),
     ]),
     ("Bakery", [
-        ("White Bread Loaf",    Decimal("549"),  10),
-        ("Croissant",           Decimal("299"),  18),
-        ("Whole-Grain Roll",    Decimal("199"),  22),
+        ("White Bread Loaf",    Decimal("165"),  10),
+        ("Croissant",           Decimal("90"),   18),
+        ("Whole-Grain Roll",    Decimal("60"),   22),
     ]),
 ]
 
@@ -99,7 +101,9 @@ async def seed_users(session: AsyncSession) -> None:
 
 
 async def seed_catalog(session: AsyncSession) -> None:
-    admin_id = uuid.uuid4()   # synthetic authorizer UUID for price commands
+    # Read margin target from settings so the seed always matches the configured default.
+    margin_target = Decimal(str(get_settings().margin_target))
+    margin_divisor = Decimal("1") - margin_target   # e.g. 0.30 for 70 % margin
 
     for cat_name, products in CATALOG:
         # ── category ──────────────────────────────────────────────────────────
@@ -109,23 +113,27 @@ async def seed_catalog(session: AsyncSession) -> None:
         category_id: uuid.UUID = cat_cmd.aggregate_id  # type: ignore[assignment]
         print(f"\n  [category] {cat_name}  ({category_id})")
 
-        for prod_name, price, stock in products:
+        for prod_name, cost, stock in products:
+            # selling_price = cost / (1 − margin_target)
+            # e.g. cost=60 Ft, margin=70% → selling=200 Ft
+            selling_price = (cost / margin_divisor).quantize(Decimal("0.01"))
+
             # ── product ───────────────────────────────────────────────────────
             prod_cmd = CreateProductCommand(
                 name=prod_name,
-                unit_price=price,
+                unit_price=selling_price,
                 category_id=category_id,
             )
             prod_handler = ProductCommandHandler(session)
             await prod_handler.handle_create_product(prod_cmd)
             product_id: uuid.UUID = prod_cmd.aggregate_id  # type: ignore[assignment]
-            print(f"    ✓ product '{prod_name}'  price={price} Ft")
+            print(f"    ✓ product '{prod_name}'  cost={cost} Ft → selling={selling_price} Ft")
 
-            # ── opening stock ─────────────────────────────────────────────────
+            # ── opening stock (unit_cost = actual purchase cost) ──────────────
             inv_cmd = CreateInventoryLayerCommand(
                 product_id=product_id,
                 quantity_received=stock,
-                unit_cost=price * Decimal("0.6"),   # 40 % margin assumption
+                unit_cost=cost,
                 supplier_ref="SEED",
             )
             inv_handler = InventoryCommandHandler(session)
