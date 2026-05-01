@@ -22,9 +22,11 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.core.db as _db
+from app.api.deps import CurrentUser, require_admin
 from app.core.db import get_db_session
 from app.core.security import decode_token
 from app.infrastructure.event_store.models import StoredEvent
+from typing import Annotated
 
 from app.infrastructure.projectors.read_entities import (
     InventoryLayerReadEntity,
@@ -370,6 +372,7 @@ async def get_audit_trail(
     aggregate_type: Optional[str] = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=25, ge=1, le=100),
+    _: Annotated[CurrentUser, Depends(require_admin)] = None,
     session: AsyncSession = Depends(get_db_session),
 ) -> AuditTrailResponse:
     """Return a paginated, filterable view of the event store."""

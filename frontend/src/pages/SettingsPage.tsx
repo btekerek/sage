@@ -11,8 +11,9 @@ import client from '../api/client'
 import { useAuthStore } from '../store/authStore'
 
 interface Config {
-  replenishment_budget: number
   replenishment_target_days: number
+  replenishment_lead_time_days: number
+  replenishment_weekly_budget: number
   costing_strategy: string
   ai_confidence_threshold: number
   margin_target: number
@@ -39,23 +40,20 @@ export default function SettingsPage() {
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Local editable copies
-  const [budget, setBudget] = useState('')
   const [targetDays, setTargetDays] = useState('')
+  const [leadTimeDays, setLeadTimeDays] = useState('')
+  const [weeklyBudget, setWeeklyBudget] = useState('')
   const [costingStrategy, setCostingStrategy] = useState('FIFO')
   const [confidenceThreshold, setConfidenceThreshold] = useState('')
   const [marginTarget, setMarginTarget] = useState('')
 
-  // Apply-margin state
   const [applyingMargin, setApplyingMargin] = useState(false)
   const [applyMarginResult, setApplyMarginResult] = useState<{
     updated: number; skipped: number; margin_target: number
   } | null>(null)
   const [applyMarginError, setApplyMarginError] = useState<string | null>(null)
 
-  useEffect(() => {
-    load()
-  }, [])
+  useEffect(() => { load() }, [])
 
   async function load() {
     setLoading(true)
@@ -63,8 +61,9 @@ export default function SettingsPage() {
       const r = await client.get('/api/config')
       const cfg: Config = r.data
       setConfig(cfg)
-      setBudget(String(cfg.replenishment_budget))
       setTargetDays(String(cfg.replenishment_target_days))
+      setLeadTimeDays(String(cfg.replenishment_lead_time_days))
+      setWeeklyBudget(String(cfg.replenishment_weekly_budget))
       setCostingStrategy(cfg.costing_strategy)
       setConfidenceThreshold(String(cfg.ai_confidence_threshold))
       setMarginTarget(String(cfg.margin_target))
@@ -81,8 +80,9 @@ export default function SettingsPage() {
     setError(null)
     try {
       const r = await client.patch('/api/config', {
-        replenishment_budget: parseFloat(budget),
         replenishment_target_days: parseInt(targetDays, 10),
+        replenishment_lead_time_days: parseInt(leadTimeDays, 10),
+        replenishment_weekly_budget: parseInt(weeklyBudget, 10),
         costing_strategy: costingStrategy,
         ai_confidence_threshold: parseFloat(confidenceThreshold),
         margin_target: parseFloat(marginTarget),
@@ -116,7 +116,7 @@ export default function SettingsPage() {
   }
 
   if (loading) return (
-    <div className="flex-1 flex items-center justify-center text-gray-400">Loading…</div>
+    <div className="flex-1 flex items-center justify-center text-gray-400">Loading...</div>
   )
 
   const isOverride = (key: string) => key in (config?.overrides ?? {})
@@ -125,7 +125,6 @@ export default function SettingsPage() {
   return (
     <div className="max-w-2xl mx-auto px-6 py-8">
 
-      {/* Header */}
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-gray-900">System Settings</h1>
         <p className="text-sm text-gray-500 mt-1">
@@ -136,11 +135,11 @@ export default function SettingsPage() {
 
       {error && (
         <div className="mb-6 bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded">
-          ⚠ {error}
+          {error}
         </div>
       )}
 
-      {/* ── Pricing & Margins ────────────────────────────────────────────────── */}
+      {/* Pricing & Margins */}
       <section className="bg-white rounded-lg border border-gray-200 mb-6 overflow-hidden">
         <div className="px-5 py-3 bg-gray-50 border-b">
           <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
@@ -154,10 +153,7 @@ export default function SettingsPage() {
           </label>
           <div className="flex items-center gap-4">
             <input
-              type="range"
-              min={0}
-              max={0.99}
-              step={0.01}
+              type="range" min={0} max={0.99} step={0.01}
               value={marginTarget}
               onChange={e => setMarginTarget(e.target.value)}
               className="flex-1 accent-indigo-600"
@@ -167,17 +163,14 @@ export default function SettingsPage() {
             </span>
           </div>
           <p className="text-xs text-gray-400 mt-2">
-            When a supplier invoice introduces a product that doesn't exist in the catalog yet,
-            the selling price is set automatically as:
-            <span className="font-mono ml-1">selling = cost ÷ (1 − target)</span>.
+            Selling price is set automatically as{' '}
+            <span className="font-mono">selling = cost / (1 - target)</span>.
             At {(marginPct * 100).toFixed(0)}% margin, a 100 Ft cost item will be priced at{' '}
             <span className="font-mono font-semibold">
-              {marginPct < 1 ? (100 / (1 - marginPct)).toFixed(2) : '∞'} Ft
+              {marginPct < 1 ? (100 / (1 - marginPct)).toFixed(2) : 'infinity'} Ft
             </span>.
-            The dashboard displays actual portfolio margin vs. this target.
           </p>
 
-          {/* Apply to existing products */}
           <div className="mt-4 pt-4 border-t border-gray-100">
             <div className="flex items-center gap-3 flex-wrap">
               <button
@@ -185,12 +178,12 @@ export default function SettingsPage() {
                 disabled={applyingMargin}
                 className="bg-amber-500 text-white px-4 py-2 rounded text-sm font-medium hover:bg-amber-600 disabled:opacity-50"
               >
-                {applyingMargin ? 'Repricing…' : `Apply ${(marginPct * 100).toFixed(0)}% to all existing products`}
+                {applyingMargin ? 'Repricing...' : `Apply ${(marginPct * 100).toFixed(0)}% to all existing products`}
               </button>
               {applyMarginResult && (
                 <span className="text-sm text-green-700 font-medium">
-                  ✓ {applyMarginResult.updated} product{applyMarginResult.updated !== 1 ? 's' : ''} repriced
-                  {applyMarginResult.skipped > 0 && `, ${applyMarginResult.skipped} skipped (no cost data)`}
+                  {applyMarginResult.updated} product{applyMarginResult.updated !== 1 ? 's' : ''} repriced
+                  {applyMarginResult.skipped > 0 && `, ${applyMarginResult.skipped} skipped`}
                 </span>
               )}
               {applyMarginError && (
@@ -198,16 +191,14 @@ export default function SettingsPage() {
               )}
             </div>
             <p className="text-xs text-gray-400 mt-1.5">
-              Recalculates the selling price of every product: uses the weighted-average
-              purchase cost from intake events where available, or the original creation price
-              as the cost basis for products added manually. Each change is recorded in the
-              audit trail.
+              Recalculates selling price for every product using weighted-average purchase cost
+              from intake events, or the original creation price as fallback.
             </p>
           </div>
         </div>
       </section>
 
-      {/* ── Replenishment ────────────────────────────────────────────────────── */}
+      {/* Replenishment Engine */}
       <section className="bg-white rounded-lg border border-gray-200 mb-6 overflow-hidden">
         <div className="px-5 py-3 bg-gray-50 border-b">
           <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
@@ -218,31 +209,11 @@ export default function SettingsPage() {
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Budget (Ft)
-              <Badge label="budget" isOverride={isOverride('replenishment_budget')} />
-            </label>
-            <input
-              type="number"
-              min={1}
-              step={500}
-              value={budget}
-              onChange={e => setBudget(e.target.value)}
-              className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
-            />
-            <p className="text-xs text-gray-400 mt-1">
-              Maximum total spend the MILP solver may recommend per replenishment run.
-            </p>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
               Target stock days
               <Badge label="target_days" isOverride={isOverride('replenishment_target_days')} />
             </label>
             <input
-              type="number"
-              min={1}
-              max={365}
+              type="number" min={1} max={365}
               value={targetDays}
               onChange={e => setTargetDays(e.target.value)}
               className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
@@ -252,10 +223,43 @@ export default function SettingsPage() {
             </p>
           </div>
 
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Supplier lead time (days)
+              <Badge label="lead_time" isOverride={isOverride('replenishment_lead_time_days')} />
+            </label>
+            <input
+              type="number" min={1} max={90}
+              value={leadTimeDays}
+              onChange={e => setLeadTimeDays(e.target.value)}
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+            />
+            <p className="text-xs text-gray-400 mt-1">
+              Expected days between placing an order and receiving stock.
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Weekly purchasing budget (Ft)
+              <Badge label="weekly_budget" isOverride={isOverride('replenishment_weekly_budget')} />
+            </label>
+            <input
+              type="number" min={1000} step={1000}
+              value={weeklyBudget}
+              onChange={e => setWeeklyBudget(e.target.value)}
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+            />
+            <p className="text-xs text-gray-400 mt-1">
+              Maximum total spend per MILP run. When binding, the solver prioritises
+              near-stockout products by urgency weight — a bounded integer knapsack optimisation.
+            </p>
+          </div>
+
         </div>
       </section>
 
-      {/* ── Inventory costing ────────────────────────────────────────────────── */}
+      {/* Inventory Costing */}
       <section className="bg-white rounded-lg border border-gray-200 mb-6 overflow-hidden">
         <div className="px-5 py-3 bg-gray-50 border-b">
           <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
@@ -278,9 +282,7 @@ export default function SettingsPage() {
                 }`}
               >
                 <input
-                  type="radio"
-                  name="costing"
-                  value={opt}
+                  type="radio" name="costing" value={opt}
                   checked={costingStrategy === opt}
                   onChange={() => setCostingStrategy(opt)}
                   className="sr-only"
@@ -297,7 +299,7 @@ export default function SettingsPage() {
         </div>
       </section>
 
-      {/* ── AI invoice pipeline ──────────────────────────────────────────────── */}
+      {/* AI Invoice Pipeline */}
       <section className="bg-white rounded-lg border border-gray-200 mb-8 overflow-hidden">
         <div className="px-5 py-3 bg-gray-50 border-b">
           <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
@@ -311,10 +313,7 @@ export default function SettingsPage() {
           </label>
           <div className="flex items-center gap-4">
             <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.05}
+              type="range" min={0} max={1} step={0.05}
               value={confidenceThreshold}
               onChange={e => setConfidenceThreshold(e.target.value)}
               className="flex-1 accent-indigo-600"
@@ -324,8 +323,7 @@ export default function SettingsPage() {
             </span>
           </div>
           <p className="text-xs text-gray-400 mt-2">
-            Extracted line items with confidence below this value are flagged for manager review.
-            Lower = fewer flags but more errors pass through. Higher = more flags, safer.
+            Line items with confidence below this value are flagged for manager review.
           </p>
         </div>
       </section>
@@ -337,16 +335,16 @@ export default function SettingsPage() {
           disabled={saving}
           className="bg-indigo-600 text-white px-6 py-2 rounded font-medium text-sm hover:bg-indigo-700 disabled:opacity-50"
         >
-          {saving ? 'Saving…' : 'Save settings'}
+          {saving ? 'Saving...' : 'Save settings'}
         </button>
         {saved && (
           <span className="text-green-600 text-sm font-medium">
-            ✓ Settings saved — changes take effect immediately
+            Settings saved
           </span>
         )}
       </div>
 
-      {/* Current effective values (read-only summary) */}
+      {/* Current effective values */}
       {config && (
         <div className="mt-8 bg-gray-50 border rounded-lg px-5 py-4">
           <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
@@ -357,12 +355,14 @@ export default function SettingsPage() {
             <dd className="font-mono font-medium text-gray-900">
               {(config.margin_target * 100).toFixed(0)}%
             </dd>
-            <dt className="text-gray-500">Replenishment budget</dt>
-            <dd className="font-mono font-medium text-gray-900">
-              {config.replenishment_budget.toLocaleString('hu-HU')} Ft
-            </dd>
             <dt className="text-gray-500">Target stock days</dt>
             <dd className="font-mono font-medium text-gray-900">{config.replenishment_target_days} days</dd>
+            <dt className="text-gray-500">Supplier lead time</dt>
+            <dd className="font-mono font-medium text-gray-900">{config.replenishment_lead_time_days} days</dd>
+            <dt className="text-gray-500">Weekly budget</dt>
+            <dd className="font-mono font-medium text-gray-900">
+              {config.replenishment_weekly_budget.toLocaleString('hu-HU')} Ft
+            </dd>
             <dt className="text-gray-500">Costing strategy</dt>
             <dd className="font-mono font-medium text-gray-900">{config.costing_strategy}</dd>
             <dt className="text-gray-500">Confidence threshold</dt>

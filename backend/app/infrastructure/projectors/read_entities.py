@@ -25,6 +25,9 @@ class ProductReadEntity(ReadBase):
     last_price_override_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Per-product replenishment overrides (NULL = use global system config)
+    lead_time_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    target_coverage_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

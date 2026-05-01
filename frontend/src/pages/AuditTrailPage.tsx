@@ -106,7 +106,7 @@ export default function AuditTrailPage() {
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
 
   return (
-    <div className="bg-gray-50">
+    <div>
       {/* Sub-header with page title + refresh */}
       <div className="bg-white border-b px-6 py-3 flex items-center justify-between">
         <div>

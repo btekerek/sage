@@ -32,15 +32,22 @@ class Settings(BaseSettings):
     
     ocr_engine_path: str = Field(..., alias="OCR_ENGINE_PATH")
 
-    replenishment_budget: float = Field(
-        10000.0,
-        alias="REPLENISHMENT_BUDGET",
-        gt=0,
-    )
     replenishment_target_days: int = Field(
         30,
         alias="REPLENISHMENT_TARGET_DAYS",
         gt=0,
+    )
+    replenishment_lead_time_days: int = Field(
+        3,
+        alias="REPLENISHMENT_LEAD_TIME_DAYS",
+        gt=0,
+    )
+    replenishment_weekly_budget: int = Field(
+        150000,
+        alias="REPLENISHMENT_WEEKLY_BUDGET",
+        gt=0,
+        description="Weekly purchasing budget in HUF. When binding, the MILP solver "
+                    "minimises weighted coverage shortfall across all products.",
     )
     costing_strategy: Literal["FIFO", "WAC"] = Field(
         "FIFO",

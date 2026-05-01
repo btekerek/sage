@@ -3,8 +3,13 @@ Replenishment API route.
 
 GET /api/replenishment/suggestions
 POST /api/replenishment/accept
+
+Resolution order for per-product replenishment parameters:
+  1. product.lead_time_days / product.target_coverage_days  (product-level override)
+  2. system config replenishment_lead_time_days / replenishment_target_days (global)
 """
 
+import hashlib
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -27,18 +32,36 @@ from app.services.milp_engine import (
 
 router = APIRouter(prefix="/api/replenishment", tags=["replenishment"])
 
-_DEFAULT_DAILY_DEMAND = Decimal("5.0")
+
+def _default_daily_demand(product_id: str, selling_price: float) -> Decimal:
+    """
+    Price-aware randomised fallback demand for products with no sale history.
+    Uses an MD5 hash of the product ID for deterministic +-35% variation.
+    """
+    if selling_price < 200:
+        base = 12.0
+    elif selling_price < 400:
+        base = 8.0
+    elif selling_price < 700:
+        base = 5.0
+    elif selling_price < 1000:
+        base = 3.0
+    else:
+        base = 1.5
+    digest = hashlib.md5(product_id.encode()).digest()
+    variation = 0.65 + (int.from_bytes(digest[-4:], "big") / 0xFFFFFFFF) * 0.70
+    return Decimal(str(round(base * variation, 2)))
 
 
 @router.get("/suggestions", response_model=ReplenishmentResult)
 async def get_replenishment_suggestions(
-    budget: float = Query(default=None),
     target_days: int = Query(default=None),
     session: AsyncSession = Depends(get_db_session),
 ) -> ReplenishmentResult:
     live_cfg = await get_runtime_config(session)
-    effective_budget = budget or float(live_cfg["replenishment_budget"])
     effective_target = target_days or int(live_cfg["replenishment_target_days"])
+    effective_lead_time = int(live_cfg["replenishment_lead_time_days"])
+    effective_budget = Decimal(str(live_cfg["replenishment_weekly_budget"]))
 
     stock_stmt = (
         select(
@@ -57,10 +80,11 @@ async def get_replenishment_suggestions(
         return ReplenishmentResult(
             suggestions=[],
             total_estimated_cost=Decimal("0.00"),
-            budget_used=Decimal("0.00"),
-            budget_remaining=Decimal(str(effective_budget)),
             feasible=True,
             solver_status="no_inventory_data",
+            budget=effective_budget,
+            budget_used=Decimal("0.00"),
+            budget_constrained=False,
         )
 
     product_ids = list(stock_by_product.keys())
@@ -79,7 +103,21 @@ async def get_replenishment_suggestions(
         product = products_by_id.get(product_id)
         if not product:
             continue
-        daily_demand = demand_by_product.get(product_id, _DEFAULT_DAILY_DEMAND)
+        daily_demand = demand_by_product.get(
+            product_id,
+            _default_daily_demand(product_id, float(product.current_price)),
+        )
+        # 2-level resolution: product override → global config
+        product_lead_time = (
+            int(product.lead_time_days)
+            if product.lead_time_days is not None
+            else effective_lead_time
+        )
+        product_target_days = (
+            int(product.target_coverage_days)
+            if product.target_coverage_days is not None
+            else None  # engine uses effective_target as fallback
+        )
         milp_inputs.append(
             ProductReplenishmentInput(
                 product_id=UUID(product_id),
@@ -87,10 +125,12 @@ async def get_replenishment_suggestions(
                 current_stock=stock,
                 daily_demand=daily_demand,
                 unit_cost=Decimal(str(product.current_price)),
+                lead_time_days=product_lead_time,
+                target_coverage_days=product_target_days,
             )
         )
 
-    return run_milp(milp_inputs, effective_budget, effective_target)
+    return run_milp(milp_inputs, effective_target, effective_budget)
 
 
 class AcceptedOrder(BaseModel):

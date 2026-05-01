@@ -312,3 +312,193 @@ async def test_draft_sale_projector_void() -> None:
 
     assert entity is not None
     assert entity.status == "voided"
+
+
+@pytest.mark.asyncio
+async def test_fifo_inventory_depletion() -> None:
+    """
+    FIFO depletion: create two inventory layers for the same product with
+    different quantities, finalize a sale that spans both layers, and verify
+    the oldest layer is depleted before the newer one.
+
+    Setup:
+      Layer A (oldest): 5 units
+      Layer B (newer):  10 units
+      Sale: 7 units  →  Layer A should reach 0, Layer B should lose 2 (8 remaining)
+    """
+    session_factory = make_session_factory()
+
+    product_id = uuid4()
+    layer_a_id = uuid4()
+    layer_b_id = uuid4()
+    sale_id = uuid4()
+
+    # Create layer A (older — created first)
+    async with session_factory() as session:
+        handler = InventoryCommandHandler(session)
+        await handler.handle_create_inventory_layer(
+            CreateInventoryLayerCommand(
+                product_id=product_id,
+                quantity_received=5,
+                unit_cost=Decimal("10.00"),
+                supplier_ref="SUPPLIER-A",
+                aggregate_id=layer_a_id,
+            )
+        )
+
+    # Create layer B (newer)
+    async with session_factory() as session:
+        handler = InventoryCommandHandler(session)
+        await handler.handle_create_inventory_layer(
+            CreateInventoryLayerCommand(
+                product_id=product_id,
+                quantity_received=10,
+                unit_cost=Decimal("12.00"),
+                supplier_ref="SUPPLIER-B",
+                aggregate_id=layer_b_id,
+            )
+        )
+
+    # Create draft sale
+    async with session_factory() as session:
+        handler = SaleCommandHandler(session)
+        await handler.handle_create_draft_sale(
+            CreateDraftSaleCommand(
+                operator_id=uuid4(),
+                session_id=uuid4(),
+                aggregate_id=sale_id,
+            )
+        )
+
+    # Add 7 units of the product (spans both layers)
+    async with session_factory() as session:
+        handler = SaleCommandHandler(session)
+        await handler.handle_add_line_item(
+            AddLineItemCommand(
+                sale_id=sale_id,
+                product_id=product_id,
+                product_name="Test Product",
+                unit_price=Decimal("20.00"),
+                quantity=7,
+                available_stock=15,
+            )
+        )
+
+    # Finalize — triggers FIFO depletion in DraftSaleProjector
+    async with session_factory() as session:
+        handler = SaleCommandHandler(session)
+        await handler.handle_finalize_sale(
+            FinalizeSaleCommand(sale_id=sale_id, payment_method="card")
+        )
+
+    # Verify layer quantities
+    async with session_factory() as session:
+        result_a = await session.execute(
+            select(InventoryLayerReadEntity).where(InventoryLayerReadEntity.id == layer_a_id)
+        )
+        layer_a = result_a.scalar_one_or_none()
+
+        result_b = await session.execute(
+            select(InventoryLayerReadEntity).where(InventoryLayerReadEntity.id == layer_b_id)
+        )
+        layer_b = result_b.scalar_one_or_none()
+
+    assert layer_a is not None, "Layer A read entity not found"
+    assert layer_b is not None, "Layer B read entity not found"
+
+    # Oldest layer fully depleted first
+    assert layer_a.quantity == 0, f"Expected layer A qty=0, got {layer_a.quantity}"
+    # Newer layer reduced by the remainder (7 - 5 = 2)
+    assert layer_b.quantity == 8, f"Expected layer B qty=8, got {layer_b.quantity}"
+
+
+@pytest.mark.asyncio
+async def test_fifo_inventory_depletion() -> None:
+    """
+    FIFO depletion: two inventory layers for the same product.
+    Sale spanning both layers should deplete the oldest first.
+
+    Layer A (oldest): 5 units  →  should reach 0 after sale
+    Layer B (newer):  10 units →  should lose 2 (remainder), ending at 8
+    """
+    session_factory = make_session_factory()
+
+    product_id = uuid4()
+    layer_a_id = uuid4()
+    layer_b_id = uuid4()
+    sale_id = uuid4()
+
+    # Oldest layer
+    async with session_factory() as session:
+        handler = InventoryCommandHandler(session)
+        await handler.handle_create_inventory_layer(
+            CreateInventoryLayerCommand(
+                product_id=product_id,
+                quantity_received=5,
+                unit_cost=Decimal("10.00"),
+                supplier_ref="SUPPLIER-A",
+                aggregate_id=layer_a_id,
+            )
+        )
+
+    # Newer layer
+    async with session_factory() as session:
+        handler = InventoryCommandHandler(session)
+        await handler.handle_create_inventory_layer(
+            CreateInventoryLayerCommand(
+                product_id=product_id,
+                quantity_received=10,
+                unit_cost=Decimal("12.00"),
+                supplier_ref="SUPPLIER-B",
+                aggregate_id=layer_b_id,
+            )
+        )
+
+    # Draft sale
+    async with session_factory() as session:
+        handler = SaleCommandHandler(session)
+        await handler.handle_create_draft_sale(
+            CreateDraftSaleCommand(
+                operator_id=uuid4(),
+                session_id=uuid4(),
+                aggregate_id=sale_id,
+            )
+        )
+
+    # Add 7 units — spans both layers (5 from A, 2 from B)
+    async with session_factory() as session:
+        handler = SaleCommandHandler(session)
+        await handler.handle_add_line_item(
+            AddLineItemCommand(
+                sale_id=sale_id,
+                product_id=product_id,
+                product_name="FIFO Product",
+                unit_price=Decimal("20.00"),
+                quantity=7,
+                available_stock=15,
+            )
+        )
+
+    # Finalize triggers FIFO depletion
+    async with session_factory() as session:
+        handler = SaleCommandHandler(session)
+        await handler.handle_finalize_sale(
+            FinalizeSaleCommand(sale_id=sale_id, payment_method="card")
+        )
+
+    # Assert oldest layer fully depleted, newer layer reduced by remainder
+    async with session_factory() as session:
+        result_a = await session.execute(
+            select(InventoryLayerReadEntity).where(InventoryLayerReadEntity.id == layer_a_id)
+        )
+        layer_a = result_a.scalar_one_or_none()
+
+        result_b = await session.execute(
+            select(InventoryLayerReadEntity).where(InventoryLayerReadEntity.id == layer_b_id)
+        )
+        layer_b = result_b.scalar_one_or_none()
+
+    assert layer_a is not None
+    assert layer_b is not None
+    assert layer_a.quantity == 0, f"Oldest layer should be fully depleted, got {layer_a.quantity}"
+    assert layer_b.quantity == 8, f"Newer layer should have 8 remaining, got {layer_b.quantity}"

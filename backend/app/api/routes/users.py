@@ -52,6 +52,7 @@ class UserResponse(BaseModel):
     role: str
     is_active: bool
     created_at: str
+    updated_at: str
 
     @classmethod
     def from_model(cls, u: UserModel) -> "UserResponse":
@@ -61,6 +62,7 @@ class UserResponse(BaseModel):
             role=u.role,
             is_active=u.is_active,
             created_at=u.created_at.isoformat(),
+            updated_at=u.updated_at.isoformat(),
         )
 
 

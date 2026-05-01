@@ -6,8 +6,8 @@ PATCH /api/config         — update one or more runtime config values
                             each change is also appended to the event store
 
 Configurable keys:
-  replenishment_budget          float  > 0
   replenishment_target_days     int    > 0
+  replenishment_lead_time_days  int    > 0
   costing_strategy              FIFO | WAC
   ai_confidence_threshold       float  0.0 – 1.0
   margin_target                 float  0.0 – 0.99
@@ -34,8 +34,9 @@ router = APIRouter(prefix="/api/config", tags=["config"])
 
 # Keys that can be changed at runtime
 _ALLOWED_KEYS = {
-    "replenishment_budget",
     "replenishment_target_days",
+    "replenishment_lead_time_days",
+    "replenishment_weekly_budget",
     "costing_strategy",
     "ai_confidence_threshold",
     "margin_target",
@@ -45,8 +46,9 @@ _ALLOWED_KEYS = {
 # ── Pydantic models ────────────────────────────────────────────────────────────
 
 class SystemConfigResponse(BaseModel):
-    replenishment_budget: float
     replenishment_target_days: int
+    replenishment_lead_time_days: int
+    replenishment_weekly_budget: int
     costing_strategy: str
     ai_confidence_threshold: float
     margin_target: float
@@ -55,8 +57,9 @@ class SystemConfigResponse(BaseModel):
 
 
 class PatchConfigRequest(BaseModel):
-    replenishment_budget: float | None = Field(None, gt=0)
     replenishment_target_days: int | None = Field(None, gt=0)
+    replenishment_lead_time_days: int | None = Field(None, gt=0)
+    replenishment_weekly_budget: int | None = Field(None, gt=0)
     costing_strategy: str | None = None
     ai_confidence_threshold: float | None = Field(None, ge=0.0, le=1.0)
     margin_target: float | None = Field(None, ge=0.0, lt=1.0)
@@ -72,8 +75,9 @@ async def get_runtime_config(session: AsyncSession) -> dict:
     """
     env = get_settings()
     defaults = {
-        "replenishment_budget": env.replenishment_budget,
         "replenishment_target_days": env.replenishment_target_days,
+        "replenishment_lead_time_days": env.replenishment_lead_time_days,
+        "replenishment_weekly_budget": env.replenishment_weekly_budget,
         "costing_strategy": env.costing_strategy,
         "ai_confidence_threshold": env.ai_confidence_threshold,
         "margin_target": env.margin_target,
@@ -88,9 +92,9 @@ async def get_runtime_config(session: AsyncSession) -> dict:
         if key not in defaults:
             continue
         try:
-            if key in ("replenishment_budget", "ai_confidence_threshold", "margin_target"):
+            if key in ("ai_confidence_threshold", "margin_target"):
                 merged[key] = float(raw_val)
-            elif key == "replenishment_target_days":
+            elif key in ("replenishment_target_days", "replenishment_lead_time_days", "replenishment_weekly_budget"):
                 merged[key] = int(raw_val)
             else:
                 merged[key] = raw_val
@@ -110,8 +114,9 @@ async def get_config(
     """Return the current effective system configuration."""
     cfg = await get_runtime_config(session)
     return SystemConfigResponse(
-        replenishment_budget=float(cfg["replenishment_budget"]),
         replenishment_target_days=int(cfg["replenishment_target_days"]),
+        replenishment_lead_time_days=int(cfg["replenishment_lead_time_days"]),
+        replenishment_weekly_budget=int(cfg["replenishment_weekly_budget"]),
         costing_strategy=str(cfg["costing_strategy"]),
         ai_confidence_threshold=float(cfg["ai_confidence_threshold"]),
         margin_target=float(cfg["margin_target"]),
@@ -131,10 +136,12 @@ async def patch_config(
     """
     updates: dict[str, str] = {}
 
-    if payload.replenishment_budget is not None:
-        updates["replenishment_budget"] = str(payload.replenishment_budget)
     if payload.replenishment_target_days is not None:
         updates["replenishment_target_days"] = str(payload.replenishment_target_days)
+    if payload.replenishment_lead_time_days is not None:
+        updates["replenishment_lead_time_days"] = str(payload.replenishment_lead_time_days)
+    if payload.replenishment_weekly_budget is not None:
+        updates["replenishment_weekly_budget"] = str(payload.replenishment_weekly_budget)
     if payload.costing_strategy is not None:
         val = payload.costing_strategy.strip().upper()
         if val not in ("FIFO", "WAC"):
@@ -202,8 +209,9 @@ async def patch_config(
 
     cfg = await get_runtime_config(session)
     return SystemConfigResponse(
-        replenishment_budget=float(cfg["replenishment_budget"]),
         replenishment_target_days=int(cfg["replenishment_target_days"]),
+        replenishment_lead_time_days=int(cfg["replenishment_lead_time_days"]),
+        replenishment_weekly_budget=int(cfg["replenishment_weekly_budget"]),
         costing_strategy=str(cfg["costing_strategy"]),
         ai_confidence_threshold=float(cfg["ai_confidence_threshold"]),
         margin_target=float(cfg["margin_target"]),

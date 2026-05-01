@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import client from '../api/client'
+import InvoiceProcessor from '../components/InvoiceProcessor'
 
 interface LineItem {
   product_name: string
@@ -61,13 +62,13 @@ export default function InvoicesPage() {
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
 
   return (
-    <div className="bg-gray-50 min-h-full">
+    <div className="min-h-full">
       {/* Sub-header */}
       <div className="bg-white border-b px-6 py-3 flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-bold text-gray-900">Approved Invoices</h1>
+          <h1 className="text-lg font-bold text-gray-900">Invoices</h1>
           <p className="text-xs text-gray-500 mt-0.5">
-            {total.toLocaleString()} invoice{total !== 1 ? 's' : ''} on record
+            {total.toLocaleString()} approved invoice{total !== 1 ? 's' : ''} on record
           </p>
         </div>
         <button onClick={fetchInvoices} className="text-sm text-blue-600 hover:underline">
@@ -76,6 +77,11 @@ export default function InvoicesPage() {
       </div>
 
       <div className="px-6 py-4">
+        {/* AI Invoice Processing — upload and approve new invoices here */}
+        <InvoiceProcessor onApproved={fetchInvoices} />
+
+        {/* Approved invoice history */}
+        <h2 className="text-base font-bold text-gray-700 mb-3">Approved Invoice History</h2>
         <div className="bg-white rounded-lg shadow overflow-hidden">
           {error && (
             <div className="px-4 py-3 bg-red-50 border-b border-red-200 text-red-700 text-sm">

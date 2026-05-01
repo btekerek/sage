@@ -69,7 +69,7 @@ export default function App() {
         />
         <Route
           path="/audit"
-          element={<ProtectedRoute element={<AppLayout><AuditTrailPage /></AppLayout>} minRole="manager" />}
+          element={<ProtectedRoute element={<AppLayout><AuditTrailPage /></AppLayout>} minRole="admin" />}
         />
         <Route
           path="/replay"

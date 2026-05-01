@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import client from '../api/client'
 import { useAuthStore } from '../store/authStore'
+import ReplenishmentSuggestions from '../components/ReplenishmentSuggestions'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -16,6 +17,10 @@ interface InventoryItem {
   margin: number | null
   current_stock: number
   stock_value: string
+  avg_daily_demand: number | null
+  days_left: number | null
+  lead_time_days: number | null
+  target_coverage_days: number | null
   last_intake_at: string | null
   last_price_override_at: string | null
 }
@@ -31,6 +36,8 @@ interface RowEdit {
   price: string
   stock: string
   stock_reason: string
+  lead_time_days: string   // empty string = use global default
+  target_coverage_days: string
 }
 
 // ── Component ──────────────────────────────────────────────────────────────
@@ -42,6 +49,8 @@ export default function InventoryPage() {
   const [items, setItems] = useState<InventoryItem[]>([])
   const [categories, setCategories] = useState<Category[]>([])
   const [marginTarget, setMarginTarget] = useState<number>(0.70)
+  const [globalLeadTime, setGlobalLeadTime] = useState<number>(3)
+  const [globalTargetDays, setGlobalTargetDays] = useState<number>(14)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -60,6 +69,8 @@ export default function InventoryPage() {
   const [newName, setNewName] = useState('')
   const [newPrice, setNewPrice] = useState('')
   const [newCat, setNewCat] = useState('')
+  const [newLeadTime, setNewLeadTime] = useState('')
+  const [newTargetDays, setNewTargetDays] = useState('')
   const [addStatus, setAddStatus] = useState('')
 
   // ── Data loading ──────────────────────────────────────────────────────
@@ -76,6 +87,8 @@ export default function InventoryPage() {
       setItems(invRes.data)
       setCategories(catRes.data)
       setMarginTarget(cfgRes.data.margin_target ?? 0.70)
+      setGlobalLeadTime(cfgRes.data.replenishment_lead_time_days ?? 3)
+      setGlobalTargetDays(cfgRes.data.replenishment_target_days ?? 14)
     } catch {
       setError('Failed to load inventory. Make sure the backend is running.')
     } finally {
@@ -118,6 +131,8 @@ export default function InventoryPage() {
         price: item.current_price,
         stock: String(item.current_stock),
         stock_reason: 'Manual stock count correction',
+        lead_time_days: item.lead_time_days !== null ? String(item.lead_time_days) : '',
+        target_coverage_days: item.target_coverage_days !== null ? String(item.target_coverage_days) : '',
       },
     }))
   }
@@ -143,16 +158,27 @@ export default function InventoryPage() {
       const catChanged = edit.category_id !== item.category_id
       const stockChanged = Number(edit.stock) !== item.current_stock
 
-      // Product name / price / category update
-      if (nameChanged || priceChanged || catChanged) {
-        await client.patch(`/api/inventory-mgmt/products/${item.product_id}`, {
-          ...(nameChanged ? { name: edit.name } : {}),
-          ...(priceChanged ? { price: Number(edit.price) } : {}),
-          ...(catChanged ? { category_id: edit.category_id } : {}),
-        })
+      const newLeadTimeVal = edit.lead_time_days === '' ? null : parseInt(edit.lead_time_days, 10)
+      const newTargetDaysVal = edit.target_coverage_days === '' ? null : parseInt(edit.target_coverage_days, 10)
+      const leadTimeChanged = newLeadTimeVal !== item.lead_time_days
+      const targetDaysChanged = newTargetDaysVal !== item.target_coverage_days
+
+      if (nameChanged || priceChanged || catChanged || leadTimeChanged || targetDaysChanged) {
+        const patchBody: Record<string, unknown> = {}
+        if (nameChanged) patchBody.name = edit.name
+        if (priceChanged) patchBody.price = Number(edit.price)
+        if (catChanged) patchBody.category_id = edit.category_id
+        if (leadTimeChanged) {
+          if (newLeadTimeVal !== null) patchBody.lead_time_days = newLeadTimeVal
+          else patchBody.clear_lead_time = true
+        }
+        if (targetDaysChanged) {
+          if (newTargetDaysVal !== null) patchBody.target_coverage_days = newTargetDaysVal
+          else patchBody.clear_target_coverage = true
+        }
+        await client.patch(`/api/inventory-mgmt/products/${item.product_id}`, patchBody)
       }
 
-      // Stock adjustment
       if (stockChanged) {
         await client.post('/api/inventory-mgmt/stock-adjustments', {
           product_id: item.product_id,
@@ -178,18 +204,22 @@ export default function InventoryPage() {
 
   async function handleAddProduct() {
     if (!newName.trim() || !newPrice || !newCat) {
-      setAddStatus('Please fill in all fields.')
+      setAddStatus('Please fill in all required fields.')
       return
     }
     setAddStatus('Creating…')
     try {
-      await client.post('/api/inventory-mgmt/products', {
+      const body: Record<string, unknown> = {
         name: newName.trim(),
         unit_price: Number(newPrice),
         category_id: newCat,
-      })
+      }
+      if (newLeadTime !== '') body.lead_time_days = parseInt(newLeadTime, 10)
+      if (newTargetDays !== '') body.target_coverage_days = parseInt(newTargetDays, 10)
+      await client.post('/api/inventory-mgmt/products', body)
       setAddStatus('✓ Product created')
       setNewName(''); setNewPrice(''); setNewCat('')
+      setNewLeadTime(''); setNewTargetDays('')
       setShowAdd(false)
       await loadData()
     } catch (e: any) {
@@ -212,6 +242,13 @@ export default function InventoryPage() {
     return 'bg-red-100 text-red-700'
   }
 
+  function daysLeftBadge(days: number | null) {
+    if (days === null) return 'bg-gray-100 text-gray-400'
+    if (days < 7) return 'bg-red-100 text-red-700'
+    if (days < 14) return 'bg-yellow-100 text-yellow-700'
+    return 'bg-green-100 text-green-700'
+  }
+
   function fmt(n: string | number) {
     return Number(n).toLocaleString('hu-HU', { minimumFractionDigits: 2 })
   }
@@ -224,7 +261,7 @@ export default function InventoryPage() {
   // ── Render ────────────────────────────────────────────────────────────
 
   return (
-    <div className="bg-gray-50">
+    <div>
       <div className="p-6 max-w-screen-xl mx-auto">
 
         {/* ── Stats bar ── */}
@@ -242,6 +279,9 @@ export default function InventoryPage() {
             </div>
           ))}
         </div>
+
+        {/* ── Replenishment Suggestions ── */}
+        <ReplenishmentSuggestions />
 
         {/* ── Toolbar ── */}
         <div className="bg-white rounded-lg shadow px-4 py-3 mb-4 flex flex-wrap gap-3 items-center justify-between">
@@ -292,56 +332,80 @@ export default function InventoryPage() {
 
         {/* ── Add product form ── */}
         {showAdd && (
-          <div className="bg-blue-50 border border-blue-200 rounded-lg px-5 py-4 mb-4 flex flex-wrap gap-3 items-end">
-            <div>
-              <label className="block text-xs text-gray-600 mb-1">Product name *</label>
-              <input
-                type="text"
-                value={newName}
-                onChange={e => setNewName(e.target.value)}
-                className="border border-gray-300 rounded px-3 py-1.5 text-sm w-56 focus:outline-none focus:border-blue-400"
-                placeholder="e.g. 1L Whole Milk"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-600 mb-1">Category *</label>
-              <select
-                value={newCat}
-                onChange={e => setNewCat(e.target.value)}
-                className="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-blue-400"
+          <div className="bg-blue-50 border border-blue-200 rounded-lg px-5 py-4 mb-4">
+            <div className="flex flex-wrap gap-3 items-end">
+              <div>
+                <label className="block text-xs text-gray-600 mb-1">Product name *</label>
+                <input
+                  type="text"
+                  value={newName}
+                  onChange={e => setNewName(e.target.value)}
+                  className="border border-gray-300 rounded px-3 py-1.5 text-sm w-56 focus:outline-none focus:border-blue-400"
+                  placeholder="e.g. 1L Whole Milk"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-600 mb-1">Category *</label>
+                <select
+                  value={newCat}
+                  onChange={e => setNewCat(e.target.value)}
+                  className="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-blue-400"
+                >
+                  <option value="">Select…</option>
+                  {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-600 mb-1">Selling price (Ft) *</label>
+                <input
+                  type="number"
+                  value={newPrice}
+                  onChange={e => setNewPrice(e.target.value)}
+                  className="border border-gray-300 rounded px-3 py-1.5 text-sm w-32 focus:outline-none focus:border-blue-400"
+                  placeholder="0.00"
+                  min="0"
+                  step="0.01"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-600 mb-1">Lead time (days)</label>
+                <input
+                  type="number"
+                  value={newLeadTime}
+                  onChange={e => setNewLeadTime(e.target.value)}
+                  className="border border-gray-300 rounded px-3 py-1.5 text-sm w-28 focus:outline-none focus:border-blue-400"
+                  placeholder={`default: ${globalLeadTime}`}
+                  min="1"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-600 mb-1">Cover days</label>
+                <input
+                  type="number"
+                  value={newTargetDays}
+                  onChange={e => setNewTargetDays(e.target.value)}
+                  className="border border-gray-300 rounded px-3 py-1.5 text-sm w-28 focus:outline-none focus:border-blue-400"
+                  placeholder={`default: ${globalTargetDays}`}
+                  min="1"
+                />
+              </div>
+              <button
+                onClick={handleAddProduct}
+                className="px-4 py-1.5 bg-green-600 text-white text-sm rounded hover:bg-green-700"
               >
-                <option value="">Select…</option>
-                {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
+                Create
+              </button>
+              <button
+                onClick={() => { setShowAdd(false); setAddStatus('') }}
+                className="px-4 py-1.5 bg-gray-200 text-gray-700 text-sm rounded hover:bg-gray-300"
+              >
+                Cancel
+              </button>
             </div>
-            <div>
-              <label className="block text-xs text-gray-600 mb-1">Selling price (Ft) *</label>
-              <input
-                type="number"
-                value={newPrice}
-                onChange={e => setNewPrice(e.target.value)}
-                className="border border-gray-300 rounded px-3 py-1.5 text-sm w-32 focus:outline-none focus:border-blue-400"
-                placeholder="0.00"
-                min="0"
-                step="0.01"
-              />
-            </div>
-            <button
-              onClick={handleAddProduct}
-              className="px-4 py-1.5 bg-green-600 text-white text-sm rounded hover:bg-green-700"
-            >
-              Create
-            </button>
-            <button
-              onClick={() => { setShowAdd(false); setAddStatus('') }}
-              className="px-4 py-1.5 bg-gray-200 text-gray-700 text-sm rounded hover:bg-gray-300"
-            >
-              Cancel
-            </button>
             {addStatus && (
-              <span className={`text-sm ${addStatus.startsWith('✓') ? 'text-green-600' : 'text-red-600'}`}>
+              <p className={`text-sm mt-2 ${addStatus.startsWith('✓') ? 'text-green-600' : 'text-red-600'}`}>
                 {addStatus}
-              </span>
+              </p>
             )}
           </div>
         )}
@@ -360,12 +424,16 @@ export default function InventoryPage() {
               <table className="w-full text-sm">
                 <thead className="bg-gray-50 border-b text-xs text-gray-500 uppercase tracking-wide">
                   <tr>
-                    <th className="text-left px-4 py-3 min-w-[200px]">Product name</th>
+                    <th className="text-left px-4 py-3 min-w-[180px]">Product name</th>
                     <th className="text-left px-4 py-3">Category</th>
                     <th className="text-right px-4 py-3">Buy price</th>
                     <th className="text-right px-4 py-3">Selling price</th>
                     <th className="text-right px-4 py-3">Margin</th>
-                    <th className="text-right px-4 py-3">Stock (units)</th>
+                    <th className="text-right px-4 py-3">Stock</th>
+                    <th className="text-right px-4 py-3">Avg demand/day</th>
+                    <th className="text-right px-4 py-3">Days left</th>
+                    <th className="text-right px-4 py-3 min-w-[90px]">Lead time</th>
+                    <th className="text-right px-4 py-3 min-w-[90px]">Cover days</th>
                     <th className="text-right px-4 py-3">Stock value</th>
                     <th className="text-left px-4 py-3">Last intake</th>
                     <th className="text-left px-4 py-3">Actions</th>
@@ -413,7 +481,7 @@ export default function InventoryPage() {
                           )}
                         </td>
 
-                        {/* Buy price (avg purchase cost) */}
+                        {/* Buy price */}
                         <td className="px-4 py-2.5 text-right font-mono text-xs text-gray-500">
                           {item.avg_unit_cost ? `${fmt(item.avg_unit_cost)} Ft` : '—'}
                         </td>
@@ -462,6 +530,68 @@ export default function InventoryPage() {
                           ) : (
                             <span className={`inline-block px-2 py-0.5 rounded font-bold text-sm ${stockBadge(item.current_stock)}`}>
                               {item.current_stock}
+                            </span>
+                          )}
+                        </td>
+
+                        {/* Avg daily demand */}
+                        <td className="px-4 py-2.5 text-right font-mono text-xs text-gray-600">
+                          {item.avg_daily_demand !== null ? item.avg_daily_demand.toFixed(2) : '—'}
+                        </td>
+
+                        {/* Days left */}
+                        <td className="px-4 py-2.5 text-right">
+                          <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${daysLeftBadge(item.days_left)}`}>
+                            {item.days_left !== null ? item.days_left.toFixed(1) : '—'}
+                          </span>
+                        </td>
+
+                        {/* Lead time */}
+                        <td className="px-4 py-2.5 text-right">
+                          {edit ? (
+                            <div className="flex flex-col items-end gap-0.5">
+                              <input
+                                type="number"
+                                value={edit.lead_time_days}
+                                onChange={e => updateField(item.product_id, 'lead_time_days', e.target.value)}
+                                min="1" max="365"
+                                placeholder={String(globalLeadTime)}
+                                className="w-20 border border-blue-300 rounded px-2 py-1 text-sm text-right focus:outline-none focus:border-blue-500"
+                              />
+                              <span className="text-xs text-gray-400">default: {globalLeadTime}d</span>
+                            </div>
+                          ) : (
+                            <span className={`inline-block px-2 py-0.5 rounded text-xs font-mono ${
+                              item.lead_time_days !== null
+                                ? 'bg-indigo-50 text-indigo-700 font-semibold'
+                                : 'text-gray-400'
+                            }`}>
+                              {item.lead_time_days !== null ? `${item.lead_time_days}d` : `${globalLeadTime}d*`}
+                            </span>
+                          )}
+                        </td>
+
+                        {/* Cover days */}
+                        <td className="px-4 py-2.5 text-right">
+                          {edit ? (
+                            <div className="flex flex-col items-end gap-0.5">
+                              <input
+                                type="number"
+                                value={edit.target_coverage_days}
+                                onChange={e => updateField(item.product_id, 'target_coverage_days', e.target.value)}
+                                min="1" max="365"
+                                placeholder={String(globalTargetDays)}
+                                className="w-20 border border-blue-300 rounded px-2 py-1 text-sm text-right focus:outline-none focus:border-blue-500"
+                              />
+                              <span className="text-xs text-gray-400">default: {globalTargetDays}d</span>
+                            </div>
+                          ) : (
+                            <span className={`inline-block px-2 py-0.5 rounded text-xs font-mono ${
+                              item.target_coverage_days !== null
+                                ? 'bg-indigo-50 text-indigo-700 font-semibold'
+                                : 'text-gray-400'
+                            }`}>
+                              {item.target_coverage_days !== null ? `${item.target_coverage_days}d` : `${globalTargetDays}d*`}
                             </span>
                           )}
                         </td>
@@ -521,11 +651,11 @@ export default function InventoryPage() {
         </div>
 
         <p className="text-xs text-gray-400 mt-3 text-center">
-          Prices shown in HUF · Buy price = weighted avg purchase cost from intake events ·
-          Margin = (selling − cost) ÷ selling · Stock value = selling price × units on hand ·
-          Margin badge: <span className="text-green-600 font-medium">green</span> ≥ target,{' '}
-          <span className="text-yellow-600 font-medium">amber</span> within 5pp,{' '}
-          <span className="text-red-600 font-medium">red</span> below
+          Prices in HUF · Buy price = weighted avg purchase cost ·
+          Margin = (selling − cost) ÷ selling · Stock value = selling price × units ·
+          Avg demand = units sold ÷ days active · Days left = stock ÷ avg demand ·
+          Lead time / Cover days: <span className="text-indigo-600 font-medium">indigo</span> = product override,{' '}
+          <span className="text-gray-500">grey *</span> = global default from Settings
         </p>
       </div>
     </div>

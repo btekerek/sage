@@ -421,3 +421,154 @@ def extract_with_claude_vision(
         )
 
     return header, line_items
+
+# ── Reconciliation path (layout + vision) ─────────────────────────────────────
+
+_RECONCILE_PROMPT_TEMPLATE = """
+You are verifying an invoice extraction performed by a PDF layout parser.
+The layout parser extracted the following structured data by analysing word positions:
+
+--- LAYOUT PARSER OUTPUT ---
+{layout_summary}
+--- END LAYOUT PARSER OUTPUT ---
+
+Now look at the invoice image(s) above and produce the final verified extraction.
+
+Rules:
+- Start from the layout parser output as a baseline — only correct values that are CLEARLY wrong in the image.
+- Use the layout row numbers and y_fraction values as-is; do not invent new rows unless you see lines the parser completely missed.
+- If the layout parser got a value right (you can confirm it in the image), keep confidence = 1.0.
+- If you correct a layout parser value based on what you see, set confidence = 0.9.
+- If you cannot confirm a value from the image, keep the layout parser value but lower confidence to 0.7.
+- For rows the layout parser missed entirely (visible in image but absent above), add them with confidence = 0.8.
+- Copy ALL product names EXACTLY as printed — do NOT translate or anglicise Hungarian text.
+- document_type: "delivery_note" if no price columns are present, otherwise "invoice".
+
+Return ONLY valid JSON — no explanation, no markdown:
+{{
+  "document_type": "invoice" or "delivery_note",
+  "supplier_name": "string or null",
+  "invoice_ref": "string or null",
+  "invoice_date": "string or null",
+  "footer_total": number or null,
+  "footer_net_total": number or null,
+  "line_items": [
+    {{
+      "product_name": "string",
+      "cikkszam": "string or empty string",
+      "page": integer,
+      "y_fraction": float,
+      "quantity": integer,
+      "unit": "string",
+      "unit_price": number,
+      "line_total": number,
+      "packaging_size": integer,
+      "vat_rate": number,
+      "brutto_line_total": number,
+      "confidence": float
+    }}
+  ]
+}}
+""".strip()
+
+
+def reconcile_with_claude_vision(
+    layout_summary: str,
+    images_b64: list[tuple[str, str]],
+    api_key: str,
+    model: str = "claude-haiku-4-5",
+    filename: str = "invoice.pdf",
+) -> tuple[InvoiceHeader, list[ExtractedLineItem]]:
+    """
+    Stage 2 (reconciliation): send layout parser output + page images to
+    Claude Vision.  Claude verifies values against the image and corrects
+    any layout-parsing errors rather than extracting from scratch.
+
+    This is faster and cheaper than full vision extraction (the model only
+    needs to verify, not discover), and produces higher confidence scores
+    when the layout parser was correct.
+    """
+    content: list[dict] = []
+    for b64, mime in images_b64:
+        content.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": mime, "data": b64},
+        })
+    prompt = _RECONCILE_PROMPT_TEMPLATE.format(layout_summary=layout_summary)
+    content.append({"type": "text", "text": prompt})
+
+    api_client = anthropic.Anthropic(api_key=api_key)
+    try:
+        message = api_client.messages.create(
+            model=model,
+            max_tokens=8192,
+            system=_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": content}],
+        )
+    except anthropic.APIError as exc:
+        raise ValueError(f"Claude reconciliation API error: {exc}") from exc
+
+    block = message.content[0]
+    if not isinstance(block, TextBlock):
+        raise ValueError("Unexpected response type from Claude reconciliation — expected text block.")
+
+    raw = block.text.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("Reconciliation extractor returned unparseable JSON — falling back to Vision")
+        raise ValueError("unparseable_json")
+
+    doc_type = data.get("document_type", "invoice")
+    if doc_type not in ("invoice", "delivery_note"):
+        doc_type = "invoice"
+
+    header = InvoiceHeader(
+        supplier_name=data.get("supplier_name"),
+        invoice_ref=data.get("invoice_ref"),
+        invoice_date=data.get("invoice_date"),
+        footer_total=_to_decimal(data.get("footer_total")),
+        footer_net_total=_to_decimal(data.get("footer_net_total")),
+        document_type=doc_type,
+    )
+
+    line_items: list[ExtractedLineItem] = []
+    for raw_item in data.get("line_items", []):
+        vat_rate = float(raw_item.get("vat_rate", 0) or 0)
+        net_total = _to_decimal(raw_item.get("line_total", 0)) or Decimal("0.00")
+        brutto_raw = _to_decimal(raw_item.get("brutto_line_total", 0))
+        if not brutto_raw or brutto_raw == Decimal("0"):
+            brutto_raw = (net_total * Decimal(str(1 + vat_rate / 100))).quantize(Decimal("0.01"))
+        try:
+            source_page = max(1, int(raw_item.get("page", 1)))
+        except (TypeError, ValueError):
+            source_page = 1
+        try:
+            y_fraction = max(0.0, min(1.0, float(raw_item.get("y_fraction", 0.5))))
+        except (TypeError, ValueError):
+            y_fraction = 0.5
+
+        line_items.append(
+            ExtractedLineItem(
+                product_name=str(raw_item.get("product_name", "Unknown")),
+                cikkszam=str(raw_item.get("cikkszam", "") or "").strip(),
+                quantity=int(raw_item.get("quantity", 0)),
+                unit=str(raw_item.get("unit", "pcs")),
+                unit_price=_to_decimal(raw_item.get("unit_price", 0)) or Decimal("0.00"),
+                line_total=net_total,
+                packaging_size=int(raw_item.get("packaging_size", 1)),
+                vat_rate=vat_rate,
+                brutto_line_total=brutto_raw,
+                confidence=float(raw_item.get("confidence", 0.7)),
+                flags=[],
+                source_page=source_page,
+                y_fraction=y_fraction,
+            )
+        )
+
+    return header, line_items

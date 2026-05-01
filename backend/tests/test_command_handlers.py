@@ -16,6 +16,8 @@ from app.domain.commands import (
     CreateDraftSaleCommand,
     CreateInventoryLayerCommand,
     CreateProductCommand,
+    FinalizeSaleCommand,
+    VoidSaleCommand,
 )
 from app.infrastructure.event_store.models import StoredEvent
 from app.infrastructure.repositories.event_store_repository import EventStoreRepository
@@ -217,5 +219,109 @@ async def test_create_inventory_layer_command():
 
     assert len(stream) == 1
     assert stream[0].event_type == "InventoryLayerCreatedEvent"
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_finalize_sale_command():
+    """
+    Create a draft sale, add a line item, finalize it.
+    Verify SaleEvent is the last event in the stream.
+    """
+    engine = make_engine()
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    sale_id = uuid.uuid4()
+    product_id = uuid.uuid4()
+
+    async with session_maker() as session:
+        handler = SaleCommandHandler(session)
+        cmd = CreateDraftSaleCommand(
+            operator_id=uuid.uuid4(),
+            session_id=uuid.uuid4(),
+            aggregate_id=sale_id,
+        )
+        await handler.handle_create_draft_sale(cmd)
+
+    async with session_maker() as session:
+        handler = SaleCommandHandler(session)
+        await handler.handle_add_line_item(
+            AddLineItemCommand(
+                sale_id=sale_id,
+                product_id=product_id,
+                product_name="Test Item",
+                unit_price=Decimal("20.00"),
+                quantity=3,
+                available_stock=50,
+            )
+        )
+
+    async with session_maker() as session:
+        handler = SaleCommandHandler(session)
+        await handler.handle_finalize_sale(
+            FinalizeSaleCommand(sale_id=sale_id, payment_method="cash")
+        )
+
+    async with session_maker() as session:
+        repo = EventStoreRepository(session)
+        stream = await repo.load_stream(str(sale_id))
+
+    event_types = [e.event_type for e in stream]
+    assert "SaleEvent" in event_types
+    sale_event = next(e for e in stream if e.event_type == "SaleEvent")
+    assert sale_event.payload["total_amount"] == "60.00"
+    assert len(sale_event.payload["line_items"]) == 1
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_void_sale_command():
+    """
+    Create a draft sale, add an item, void it.
+    Verify VoidEvent is the last event and carries the reason.
+    """
+    engine = make_engine()
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    sale_id = uuid.uuid4()
+    product_id = uuid.uuid4()
+
+    async with session_maker() as session:
+        handler = SaleCommandHandler(session)
+        await handler.handle_create_draft_sale(
+            CreateDraftSaleCommand(
+                operator_id=uuid.uuid4(),
+                session_id=uuid.uuid4(),
+                aggregate_id=sale_id,
+            )
+        )
+
+    async with session_maker() as session:
+        handler = SaleCommandHandler(session)
+        await handler.handle_add_line_item(
+            AddLineItemCommand(
+                sale_id=sale_id,
+                product_id=product_id,
+                product_name="Doomed Item",
+                unit_price=Decimal("10.00"),
+                quantity=1,
+                available_stock=10,
+            )
+        )
+
+    async with session_maker() as session:
+        handler = SaleCommandHandler(session)
+        await handler.handle_void_sale(
+            VoidSaleCommand(sale_id=sale_id, reason="Customer cancelled")
+        )
+
+    async with session_maker() as session:
+        repo = EventStoreRepository(session)
+        stream = await repo.load_stream(str(sale_id))
+
+    event_types = [e.event_type for e in stream]
+    assert "VoidEvent" in event_types
+    void_event = next(e for e in stream if e.event_type == "VoidEvent")
+    assert void_event.payload["reason"] == "Customer cancelled"
 
     await engine.dispose()
