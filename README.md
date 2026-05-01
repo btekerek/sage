@@ -170,7 +170,7 @@ The theme is resolved at runtime from the `ROLE_THEME` lookup object exported fr
 
 ### Login
 
-![Login page](./screencaptures/login.png)
+![Login page](./screencaptures/1-staff-login.png)
 
 *Figure 1 — Login page. The role-appropriate theme is applied immediately after authentication.*
 
@@ -182,11 +182,11 @@ The theme is resolved at runtime from the `ROLE_THEME` lookup object exported fr
 
 Staff navigate a category grid, add products to a cart, and finalise payment by cash or card. Each sale deducts stock in real time via `SaleEvent`. Out-of-stock products are greyed out. Voiding a draft emits a `VoidEvent` and leaves inventory unchanged.
 
-![POS category selection](./screencaptures/staff-pos.png)
+![POS category selection](./screencaptures/2-staff-pos.png)
 
 *Figure 2 — POS home screen showing the category tile grid (staff / sky theme).*
 
-![POS product grid with cart](./screencaptures/staff-pos-soft-drinks.png)
+![POS product grid with cart](./screencaptures/3-staff-pos-cart.png)
 
 *Figure 3 — POS product grid for Soft Drinks with an active cart, running total, and payment method selection.*
 
@@ -200,11 +200,11 @@ The replenishment suggestion table is embedded directly in the dashboard and ref
 
 The dashboard header is role-aware: **Manager Dashboard** for manager accounts, **Admin Dashboard** for admin accounts.
 
-![Manager Dashboard](./screencaptures/manager-dashboard.png)
+![Manager Dashboard](./screencaptures/4-manager-dashboard.png)
 
 *Figure 4 — Manager Dashboard (emerald theme) showing KPI cards, live transactions feed, and MILP replenishment suggestions.*
 
-![Admin Dashboard](./screencaptures/admin-dashboard.png)
+![Admin Dashboard](./screencaptures/5-admin-dashboard.png)
 
 *Figure 5 — Admin Dashboard (violet theme) with the same MILP replenishment panel.*
 
@@ -220,7 +220,7 @@ Managers upload a supplier invoice (PDF, PNG, JPEG, or TIFF up to 10 MB). The th
 
 On approval, one `InventoryIntakeEvent` is written per line item. New products encountered for the first time are auto-created with a margin-derived selling price (`unit_cost / (1 − margin_target)`). After approval, the replenishment suggestions panel refreshes automatically across both the Dashboard and Inventory pages.
 
-![Invoice Processing](./screencaptures/manager-invoice.png)
+![Invoice Processing](./screencaptures/6-manager-invoice.png)
 
 *Figure 6 — Invoice Processing page (emerald theme). Upper panel handles document upload and AI extraction; lower panel shows the approval history.*
 
@@ -255,7 +255,7 @@ Leaving either field blank on a product falls back to the global values from Set
 
 The `ReplenishmentSuggestions` component is shared between the Dashboard and the Inventory page — both consume the same `/api/replenishment/suggestions` endpoint.
 
-![Inventory with replenishment](./screencaptures/manager-inventory.png)
+![Inventory with replenishment](./screencaptures/7-manager-inventory.png)
 
 *Figure 7 — Inventory page (emerald theme) showing the MILP replenishment suggestions panel and the full product table.*
 
@@ -296,7 +296,7 @@ Managers and admins adjust runtime parameters. All changes are persisted as `Sys
 | Weekly budget | 150,000 | Maximum total spend per replenishment run (HUF); when binding, the solver deprioritises lower-urgency products |
 | Costing strategy | FIFO | Inventory valuation method — FIFO or WAC (weighted average) |
 
-![Settings page](./screencaptures/manager-settings.png)
+![Settings page](./screencaptures/8-manager-settings.png)
 
 *Figure 8 — Settings page (emerald theme) showing all configurable runtime parameters.*
 
@@ -306,7 +306,7 @@ Managers and admins adjust runtime parameters. All changes are persisted as `Sys
 
 Full paginated view of the append-only event store. Filterable by event type, sorted by descending timestamp. Each row expands to reveal the full JSON payload with event metadata (event ID, sequence number, causation ID, actor ID).
 
-![Audit Trail](./screencaptures/admin-audit trail.png)
+![Audit Trail](./screencaptures/9-admin-audit-trail.png)
 
 *Figure 9 — Audit Trail page (violet / admin theme) showing the event log with type filters and expandable payload rows.*
 
@@ -316,7 +316,7 @@ Full paginated view of the append-only event store. Filterable by event type, so
 
 The Replay page lets admins select any past date and reconstruct the exact system state as it existed at that moment by replaying events up to that timestamp — demonstrating the core event-sourcing guarantee that any historical snapshot is deterministically reproducible from sequence 0.
 
-![Replay page](./screencaptures/manager-replay.png)
+![Replay page](./screencaptures/10-admin-replay.png)
 
 *Figure 10 — Replay page with the date-picker control for historical state reconstruction.*
 
@@ -342,7 +342,7 @@ Admins have a full-width user management panel with KPI summary cards and a deta
 
 Password policy: minimum 8 characters including at least one uppercase letter, one digit, and one special character. Admins cannot deactivate or demote their own account.
 
-![User Management](./screencaptures/admin-user management.png)
+![User Management](./screencaptures/11-admin-user-management.png)
 
 *Figure 11 — User Management page (violet / admin theme) showing KPI cards and the full-width user table.*
 
